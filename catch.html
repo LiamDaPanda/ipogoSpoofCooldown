@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>Excellent Curveball Practice</title>
+<style>
+  :root {
+    --bg: #0f172a;
+    --panel: #1e293b;
+    --panel-2: #273449;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --accent: #22d3ee;
+    --accent-2: #a78bfa;
+    --ok: #4ade80;
+    --warn: #fbbf24;
+    --danger: #f87171;
+    --border: #334155;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+  .container {
+    max-width: 640px;
+    margin: 0 auto;
+    padding: 16px;
+  }
+  nav {
+    display: flex;
+    gap: 4px;
+    background: var(--panel-2);
+    padding: 4px;
+    border-radius: 10px;
+    margin-bottom: 16px;
+  }
+  nav a {
+    flex: 1;
+    padding: 10px;
+    text-align: center;
+    color: var(--muted);
+    text-decoration: none;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    transition: all 0.15s;
+  }
+  nav a.active {
+    background: var(--panel);
+    color: var(--text);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.3);
+  }
+  header {
+    text-align: center;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 1.35rem;
+    margin: 0 0 4px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .subtitle {
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+  .scoreboard {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+  .stat {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 6px;
+    text-align: center;
+  }
+  .stat span {
+    display: block;
+    font-size: 0.65rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 2px;
+  }
+  .stat strong {
+    font-size: 1.15rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .stage {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 3 / 5;
+    max-height: 70vh;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+  .hint {
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.8rem;
+    margin-top: 12px;
+    line-height: 1.5;
+  }
+  .controls {
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 12px;
+  }
+  button.ghost {
+    padding: 8px 14px;
+    background: transparent;
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.85rem;
+  }
+  button.ghost:hover { color: var(--text); }
+</style>
+</head>
+<body>
+<div class="container">
+  <nav>
+    <a href="index.html">Cooldown</a>
+    <a href="catch.html" class="active">Catch Practice</a>
+  </nav>
+
+  <header>
+    <h1>Excellent Curveball Practice</h1>
+    <div class="subtitle">Spin the ball, then flick up when the ring is smallest.</div>
+  </header>
+
+  <div class="scoreboard">
+    <div class="stat"><span>Score</span><strong id="score">0</strong></div>
+    <div class="stat"><span>Streak</span><strong id="streak">0</strong></div>
+    <div class="stat"><span>Best</span><strong id="best">0</strong></div>
+    <div class="stat"><span>XL Curves</span><strong id="excellent">0</strong></div>
+  </div>
+
+  <div class="stage" id="stage">
+    <canvas id="game"></canvas>
+  </div>
+
+  <div class="controls">
+    <button class="ghost" id="reset-btn">Reset</button>
+  </div>
+
+  <p class="hint">
+    Drag the ball in a circle (at least one full loop) to add curveball spin.<br />
+    Then flick <em>upward</em> to throw. Time it so the inner ring is at its smallest.
+  </p>
+</div>
+
+<script>
+  const stage = document.getElementById('stage');
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const DPR = Math.min(window.devicePixelRatio || 1, 2);
+
+  function resize() {
+    const w = stage.clientWidth;
+    const h = stage.clientHeight;
+    canvas.width = Math.floor(w * DPR);
+    canvas.height = Math.floor(h * DPR);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+  const ro = new ResizeObserver(resize);
+  ro.observe(stage);
+  resize();
+
+  const W = () => stage.clientWidth;
+  const H = () => stage.clientHeight;
+
+  const targetX = () => W() / 2;
+  const targetY = () => Math.min(H() * 0.3, 200);
+  const outerR = () => Math.min(W() * 0.28, 110);
+  const ballR = () => Math.max(22, W() * 0.075);
+  const ballStartX = () => W() / 2;
+  const ballStartY = () => H() - ballR() - 40;
+
+  const SPIN_THRESHOLD = 2 * Math.PI * 1.1; // ~one full loop
+  const CYCLE_MS = 1900;
+
+  const state = {
+    status: 'idle',
+    ball: { x: 0, y: 0 },
+    dragStart: null,
+    lastAngle: 0,
+    spinTotal: 0,
+    curveball: false,
+    ringPhaseStart: performance.now(),
+    frozenRingRatio: null,
+    throwStart: null,
+    thrownAt: 0,
+    verdict: null,
+    score: 0,
+    streak: 0,
+    best: 0,
+    excellent: 0,
+    ballSpinAngle: 0,
+    ballSpinVel: 0,
+    lastMoveT: 0,
+    lastVel: { vx: 0, vy: 0 },
+  };
+
+  function resetBall() {
+    state.ball.x = ballStartX();
+    state.ball.y = ballStartY();
+    state.status = 'idle';
+    state.dragStart = null;
+    state.spinTotal = 0;
+    state.curveball = false;
+    state.frozenRingRatio = null;
+    state.throwStart = null;
+    state.ballSpinAngle = 0;
+    state.ballSpinVel = 0;
+    state.lastVel = { vx: 0, vy: 0 };
+  }
+  resetBall();
+
+  function ringRatio(now) {
+    const t = ((now - state.ringPhaseStart) % CYCLE_MS) / CYCLE_MS;
+    // 0.2 (smallest) at t=0.5, 1.0 at t=0 and t=1
+    return 0.6 + 0.4 * Math.cos(t * 2 * Math.PI);
+  }
+
+  function tierForRatio(r) {
+    if (r <= 0.33) return { label: 'Excellent', pts: 100, color: '#4ade80' };
+    if (r <= 0.55) return { label: 'Great', pts: 50, color: '#22d3ee' };
+    if (r <= 0.80) return { label: 'Nice', pts: 20, color: '#fbbf24' };
+    return { label: 'Miss', pts: 0, color: '#f87171' };
+  }
+
+  canvas.addEventListener('pointerdown', e => {
+    if (state.status !== 'idle') return;
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const dx = x - state.ball.x;
+    const dy = y - state.ball.y;
+    const grabR = ballR() + 30;
+    if (dx * dx + dy * dy > grabR * grabR) return;
+    e.preventDefault();
+    canvas.setPointerCapture(e.pointerId);
+    state.status = 'dragging';
+    state.dragStart = { x: state.ball.x, y: state.ball.y };
+    state.lastAngle = Math.atan2(y - state.ball.y, x - state.ball.x);
+    state.spinTotal = 0;
+    state.curveball = false;
+    state.ballSpinVel = 0;
+    state.lastMoveT = performance.now();
+    state.lastVel = { vx: 0, vy: 0 };
+    state.lastPos = { x, y };
+  });
+
+  canvas.addEventListener('pointermove', e => {
+    if (state.status !== 'dragging') return;
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const now = performance.now();
+
+    // spin: measure angular change around ball center (as it currently is)
+    const angle = Math.atan2(y - state.ball.y, x - state.ball.x);
+    let da = angle - state.lastAngle;
+    if (da > Math.PI) da -= 2 * Math.PI;
+    if (da < -Math.PI) da += 2 * Math.PI;
+    state.spinTotal += da;
+    state.lastAngle = angle;
+    state.ballSpinVel = da * 8;
+
+    if (Math.abs(state.spinTotal) >= SPIN_THRESHOLD) state.curveball = true;
+
+    // velocity for release
+    const dt = Math.max(1, now - state.lastMoveT);
+    state.lastVel = {
+      vx: (x - state.lastPos.x) / dt,
+      vy: (y - state.lastPos.y) / dt,
+    };
+    state.lastMoveT = now;
+    state.lastPos = { x, y };
+
+    // move ball to pointer, clamped
+    state.ball.x = Math.max(ballR(), Math.min(W() - ballR(), x));
+    state.ball.y = Math.max(ballR(), Math.min(H() - ballR(), y));
+  });
+
+  function onRelease(e) {
+    if (state.status !== 'dragging') return;
+    try { canvas.releasePointerCapture(e.pointerId); } catch {}
+    const { vx, vy } = state.lastVel;
+    // Require upward flick.
+    if (vy > -0.4) {
+      returnBall();
+      return;
+    }
+    // Ball must have travelled up somewhat too.
+    if (state.ball.y > ballStartY() - 20) {
+      returnBall();
+      return;
+    }
+    state.status = 'thrown';
+    state.thrownAt = performance.now();
+    state.frozenRingRatio = ringRatio(state.thrownAt);
+    state.throwStart = { x: state.ball.x, y: state.ball.y };
+    state.throwVel = { vx, vy };
+  }
+  canvas.addEventListener('pointerup', onRelease);
+  canvas.addEventListener('pointercancel', onRelease);
+
+  function returnBall() {
+    state.status = 'returning';
+    state.returnFrom = { x: state.ball.x, y: state.ball.y };
+    state.returnStart = performance.now();
+  }
+
+  function completeThrow(hitTarget) {
+    const tier = hitTarget ? tierForRatio(state.frozenRingRatio)
+                           : { label: 'Miss', pts: 0, color: '#f87171' };
+    let pts = tier.pts;
+    if (state.curveball && pts > 0) pts = Math.round(pts * 1.5);
+    state.score += pts;
+    if (tier.label === 'Miss') {
+      state.streak = 0;
+    } else {
+      state.streak += 1;
+      if (state.streak > state.best) state.best = state.streak;
+    }
+    if (tier.label === 'Excellent' && state.curveball) state.excellent += 1;
+    state.verdict = {
+      label: (state.curveball && tier.label !== 'Miss' ? 'Curveball ' : '') + tier.label,
+      pts,
+      color: tier.color,
+      time: performance.now(),
+    };
+    updateUI();
+    state.status = 'result';
+    setTimeout(resetBall, 1100);
+  }
+
+  function updateUI() {
+    document.getElementById('score').textContent = state.score;
+    document.getElementById('streak').textContent = state.streak;
+    document.getElementById('best').textContent = state.best;
+    document.getElementById('excellent').textContent = state.excellent;
+  }
+
+  document.getElementById('reset-btn').addEventListener('click', () => {
+    state.score = 0;
+    state.streak = 0;
+    state.best = 0;
+    state.excellent = 0;
+    updateUI();
+    resetBall();
+  });
+
+  function drawBall(x, y, r, angle) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+    ctx.beginPath();
+    ctx.arc(0, 0, r, Math.PI, 2 * Math.PI);
+    ctx.fillStyle = '#ef4444';
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI);
+    ctx.fillStyle = '#f8fafc';
+    ctx.fill();
+    ctx.strokeStyle = '#0f172a';
+    ctx.lineWidth = Math.max(2, r * 0.12);
+    ctx.beginPath();
+    ctx.moveTo(-r, 0);
+    ctx.lineTo(r, 0);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(0, 0, r * 0.28, 0, 2 * Math.PI);
+    ctx.fillStyle = '#0f172a';
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(0, 0, r * 0.16, 0, 2 * Math.PI);
+    ctx.fillStyle = '#e2e8f0';
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawPokemon(cx, cy, r) {
+    // simple silhouette blob
+    ctx.fillStyle = '#334155';
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, 2 * Math.PI);
+    ctx.fill();
+    // ears
+    ctx.beginPath();
+    ctx.moveTo(cx - r * 0.7, cy - r * 0.5);
+    ctx.lineTo(cx - r * 0.35, cy - r * 1.15);
+    ctx.lineTo(cx - r * 0.15, cy - r * 0.65);
+    ctx.closePath();
+    ctx.moveTo(cx + r * 0.7, cy - r * 0.5);
+    ctx.lineTo(cx + r * 0.35, cy - r * 1.15);
+    ctx.lineTo(cx + r * 0.15, cy - r * 0.65);
+    ctx.closePath();
+    ctx.fill();
+    // eyes
+    ctx.fillStyle = '#f8fafc';
+    ctx.beginPath();
+    ctx.arc(cx - r * 0.3, cy - r * 0.1, r * 0.15, 0, 2 * Math.PI);
+    ctx.arc(cx + r * 0.3, cy - r * 0.1, r * 0.15, 0, 2 * Math.PI);
+    ctx.fill();
+    ctx.fillStyle = '#0f172a';
+    ctx.beginPath();
+    ctx.arc(cx - r * 0.3, cy - r * 0.1, r * 0.07, 0, 2 * Math.PI);
+    ctx.arc(cx + r * 0.3, cy - r * 0.1, r * 0.07, 0, 2 * Math.PI);
+    ctx.fill();
+  }
+
+  function draw(now) {
+    const w = W(), h = H();
+    ctx.clearRect(0, 0, w, h);
+
+    // Pokemon
+    drawPokemon(targetX(), targetY(), Math.min(60, W() * 0.16));
+
+    // Outer ring
+    const or = outerR();
+    ctx.strokeStyle = 'rgba(148, 163, 184, 0.3)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(targetX(), targetY(), or, 0, 2 * Math.PI);
+    ctx.stroke();
+
+    // Inner target ring
+    const ratio = (state.status === 'thrown' || state.status === 'result')
+      ? state.frozenRingRatio
+      : ringRatio(now);
+    const innerR = or * ratio;
+    const tier = tierForRatio(ratio);
+    ctx.strokeStyle = tier.color;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(targetX(), targetY(), innerR, 0, 2 * Math.PI);
+    ctx.stroke();
+
+    // Spin progress meter around ball while dragging
+    if (state.status === 'dragging') {
+      const progress = Math.min(1, Math.abs(state.spinTotal) / SPIN_THRESHOLD);
+      const dir = state.spinTotal >= 0 ? 1 : -1;
+      ctx.strokeStyle = state.curveball ? 'rgba(167, 139, 250, 0.9)' : 'rgba(148, 163, 184, 0.5)';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(state.ball.x, state.ball.y, ballR() + 12,
+        -Math.PI / 2,
+        -Math.PI / 2 + dir * 2 * Math.PI * progress,
+        dir < 0);
+      ctx.stroke();
+    }
+
+    // Throw animation
+    if (state.status === 'thrown') {
+      const dt = (now - state.thrownAt) / 1000;
+      const flyDur = 0.6;
+      const p = Math.min(1, dt / flyDur);
+      const ease = 1 - (1 - p) * (1 - p);
+      let bx = state.throwStart.x + (targetX() - state.throwStart.x) * ease;
+      let by = state.throwStart.y + (targetY() - state.throwStart.y) * ease;
+      if (state.curveball) {
+        const dir = state.spinTotal >= 0 ? 1 : -1;
+        const bow = Math.sin(p * Math.PI) * 80 * dir;
+        const dx = targetX() - state.throwStart.x;
+        const dy = targetY() - state.throwStart.y;
+        const len = Math.hypot(dx, dy) || 1;
+        bx += (-dy / len) * bow;
+        by += (dx / len) * bow;
+      }
+      state.ball.x = bx;
+      state.ball.y = by;
+      state.ballSpinAngle += (state.curveball ? 0.4 : 0.08);
+      if (p >= 1) {
+        // Did we land inside the outer ring?
+        const dx = state.ball.x - targetX();
+        const dy = state.ball.y - targetY();
+        const inside = Math.hypot(dx, dy) <= or + ballR() * 0.3;
+        completeThrow(inside);
+      }
+    } else if (state.status === 'returning') {
+      const dt = (now - state.returnStart) / 300;
+      const p = Math.min(1, dt);
+      state.ball.x = state.returnFrom.x + (ballStartX() - state.returnFrom.x) * p;
+      state.ball.y = state.returnFrom.y + (ballStartY() - state.returnFrom.y) * p;
+      state.ballSpinAngle *= 0.9;
+      if (p >= 1) resetBall();
+    } else if (state.status === 'dragging') {
+      state.ballSpinAngle += state.ballSpinVel;
+      state.ballSpinVel *= 0.9;
+    }
+
+    drawBall(state.ball.x, state.ball.y, ballR(), state.ballSpinAngle);
+
+    // Verdict banner
+    if (state.verdict) {
+      const age = (now - state.verdict.time) / 1000;
+      const alpha = Math.max(0, 1 - age / 1.1);
+      ctx.globalAlpha = alpha;
+      ctx.textAlign = 'center';
+      ctx.font = 'bold 30px -apple-system, BlinkMacSystemFont, sans-serif';
+      ctx.fillStyle = state.verdict.color;
+      ctx.fillText(state.verdict.label, w / 2, targetY() + or + 44);
+      if (state.verdict.pts > 0) {
+        ctx.font = 'bold 18px -apple-system, sans-serif';
+        ctx.fillStyle = '#e2e8f0';
+        ctx.fillText('+' + state.verdict.pts, w / 2, targetY() + or + 70);
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    requestAnimationFrame(draw);
+  }
+
+  requestAnimationFrame(draw);
+</script>
+</body>
+</html>
