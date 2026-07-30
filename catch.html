@@ -159,7 +159,7 @@
 
   <header>
     <h1>Excellent Curveball Practice</h1>
-    <div class="subtitle">Spin the ball, then flick up when the ring is smallest.</div>
+    <div class="subtitle">Aim, speed, spin. Land inside the smallest inner ring.</div>
   </header>
 
   <div class="scoreboard">
@@ -178,8 +178,9 @@
   </div>
 
   <p class="hint">
-    Drag the ball in a circle (at least one full loop) to add curveball spin.<br />
-    Then flick <em>upward</em> to throw. Time it so the inner ring is at its smallest.
+    Drag the ball in a circle to add curveball spin, then flick it toward the Pokémon.<br />
+    Aim, speed and direction all matter. Curveballs bend — throw off-center to compensate.<br />
+    Score fires on impact: land inside the smallest inner ring for an Excellent.
   </p>
 </div>
 
@@ -216,14 +217,17 @@
   const state = {
     status: 'idle',
     ball: { x: 0, y: 0 },
+    ballVel: { vx: 0, vy: 0 },
     dragStart: null,
     lastAngle: 0,
     spinTotal: 0,
     curveball: false,
     ringPhaseStart: performance.now(),
     frozenRingRatio: null,
-    throwStart: null,
     thrownAt: 0,
+    flightStart: 0,
+    lastRAF: 0,
+    trail: [],
     verdict: null,
     score: 0,
     streak: 0,
@@ -238,12 +242,13 @@
   function resetBall() {
     state.ball.x = ballStartX();
     state.ball.y = ballStartY();
+    state.ballVel = { vx: 0, vy: 0 };
     state.status = 'idle';
     state.dragStart = null;
     state.spinTotal = 0;
     state.curveball = false;
     state.frozenRingRatio = null;
-    state.throwStart = null;
+    state.trail = [];
     state.ballSpinAngle = 0;
     state.ballSpinVel = 0;
     state.lastVel = { vx: 0, vy: 0 };
@@ -334,9 +339,14 @@
     }
     state.status = 'thrown';
     state.thrownAt = performance.now();
-    state.frozenRingRatio = ringRatio(state.thrownAt);
-    state.throwStart = { x: state.ball.x, y: state.ball.y };
-    state.throwVel = { vx, vy };
+    state.flightStart = state.thrownAt;
+    state.lastRAF = state.thrownAt;
+    // Clamp velocity so ridiculously fast flicks don't teleport the ball.
+    const speed = Math.hypot(vx, vy);
+    const MAX_SPEED = 2.4; // px/ms
+    const scale = speed > MAX_SPEED ? MAX_SPEED / speed : 1;
+    state.ballVel = { vx: vx * scale, vy: vy * scale };
+    state.trail = [{ x: state.ball.x, y: state.ball.y }];
   }
   canvas.addEventListener('pointerup', onRelease);
   canvas.addEventListener('pointercancel', onRelease);
@@ -347,15 +357,33 @@
     state.returnStart = performance.now();
   }
 
-  function completeThrow(hitTarget) {
-    const tier = hitTarget ? tierForRatio(state.frozenRingRatio)
-                           : { label: 'Miss', pts: 0, color: '#f87171' };
+  function completeThrow(distFromCenter, ratioAtImpact) {
+    // ratioAtImpact is the inner ring's ratio at the moment of collision,
+    // or null if the ball never hit the target.
+    let tier;
+    const or = outerR();
+    if (ratioAtImpact == null || distFromCenter > or) {
+      tier = { label: 'Miss', pts: 0, color: '#f87171' };
+    } else {
+      const innerR = or * ratioAtImpact;
+      if (distFromCenter <= innerR) {
+        // Landed inside the shrinking ring — score based on ring size.
+        if (ratioAtImpact <= 0.33) tier = { label: 'Excellent', pts: 100, color: '#4ade80' };
+        else if (ratioAtImpact <= 0.55) tier = { label: 'Great', pts: 50, color: '#22d3ee' };
+        else if (ratioAtImpact <= 0.80) tier = { label: 'Nice', pts: 20, color: '#fbbf24' };
+        else tier = { label: 'Hit', pts: 10, color: '#94a3b8' };
+      } else {
+        // Hit the Pokémon but outside the inner ring — small credit, no bonus.
+        tier = { label: 'Hit', pts: 5, color: '#94a3b8' };
+      }
+    }
+    state.frozenRingRatio = ratioAtImpact != null ? ratioAtImpact : ringRatio(performance.now());
     let pts = tier.pts;
     if (state.curveball && pts > 0) pts = Math.round(pts * 1.5);
     state.score += pts;
     if (tier.label === 'Miss') {
       state.streak = 0;
-    } else {
+    } else if (pts > 0) {
       state.streak += 1;
       if (state.streak > state.best) state.best = state.streak;
     }
@@ -461,8 +489,8 @@
     ctx.arc(targetX(), targetY(), or, 0, 2 * Math.PI);
     ctx.stroke();
 
-    // Inner target ring
-    const ratio = (state.status === 'thrown' || state.status === 'result')
+    // Inner target ring — live during flight, frozen during result banner.
+    const ratio = state.status === 'result'
       ? state.frozenRingRatio
       : ringRatio(now);
     const innerR = or * ratio;
@@ -487,32 +515,54 @@
       ctx.stroke();
     }
 
-    // Throw animation
+    // Physics-based throw
     if (state.status === 'thrown') {
-      const dt = (now - state.thrownAt) / 1000;
-      const flyDur = 0.6;
-      const p = Math.min(1, dt / flyDur);
-      const ease = 1 - (1 - p) * (1 - p);
-      let bx = state.throwStart.x + (targetX() - state.throwStart.x) * ease;
-      let by = state.throwStart.y + (targetY() - state.throwStart.y) * ease;
+      const dt = Math.min(32, now - state.lastRAF);
+      state.lastRAF = now;
+
+      // Gravity — light downward pull so weak throws fall short.
+      const GRAVITY = 0.0009;
+      state.ballVel.vy += GRAVITY * dt;
+
+      // Curveball: perpendicular acceleration in the direction the ball
+      // was spun. Sign of spinTotal picks the side; magnitude scales with
+      // how much spin was built up (capped at ~2 full loops).
       if (state.curveball) {
-        const dir = state.spinTotal >= 0 ? 1 : -1;
-        const bow = Math.sin(p * Math.PI) * 80 * dir;
-        const dx = targetX() - state.throwStart.x;
-        const dy = targetY() - state.throwStart.y;
-        const len = Math.hypot(dx, dy) || 1;
-        bx += (-dy / len) * bow;
-        by += (dx / len) * bow;
+        const spd = Math.hypot(state.ballVel.vx, state.ballVel.vy);
+        if (spd > 0.01) {
+          // 90° clockwise rotation of velocity direction (in screen coords).
+          const perpX = -state.ballVel.vy / spd;
+          const perpY = state.ballVel.vx / spd;
+          const spinFactor = Math.min(1.5, Math.abs(state.spinTotal) / SPIN_THRESHOLD);
+          const sign = state.spinTotal >= 0 ? 1 : -1;
+          const CURVE_STRENGTH = 0.0008;
+          const a = sign * spinFactor * CURVE_STRENGTH;
+          state.ballVel.vx += perpX * a * dt;
+          state.ballVel.vy += perpY * a * dt;
+        }
       }
-      state.ball.x = bx;
-      state.ball.y = by;
-      state.ballSpinAngle += (state.curveball ? 0.4 : 0.08);
-      if (p >= 1) {
-        // Did we land inside the outer ring?
-        const dx = state.ball.x - targetX();
-        const dy = state.ball.y - targetY();
-        const inside = Math.hypot(dx, dy) <= or + ballR() * 0.3;
-        completeThrow(inside);
+
+      state.ball.x += state.ballVel.vx * dt;
+      state.ball.y += state.ballVel.vy * dt;
+      state.ballSpinAngle += (state.curveball ? 0.35 : 0.08);
+
+      state.trail.push({ x: state.ball.x, y: state.ball.y });
+      if (state.trail.length > 40) state.trail.shift();
+
+      // Collision with the Pokémon's outer ring. Trigger when ball center
+      // reaches the outer boundary — matches the judgment threshold in
+      // completeThrow, so a fired collision always scores at least "Hit".
+      const dx = state.ball.x - targetX();
+      const dy = state.ball.y - targetY();
+      const dist = Math.hypot(dx, dy);
+      if (dist <= or) {
+        completeThrow(dist, ringRatio(now));
+      } else if (
+        state.ball.x < -60 || state.ball.x > w + 60 ||
+        state.ball.y > h + 60 || state.ball.y < -200 ||
+        (now - state.flightStart) > 3000
+      ) {
+        completeThrow(Infinity, null);
       }
     } else if (state.status === 'returning') {
       const dt = (now - state.returnStart) / 300;
@@ -524,6 +574,22 @@
     } else if (state.status === 'dragging') {
       state.ballSpinAngle += state.ballSpinVel;
       state.ballSpinVel *= 0.9;
+    }
+
+    // Trail behind the ball during flight
+    if (state.trail && state.trail.length > 1) {
+      ctx.lineCap = 'round';
+      for (let i = 1; i < state.trail.length; i++) {
+        const a = i / state.trail.length;
+        ctx.strokeStyle = state.curveball
+          ? `rgba(167, 139, 250, ${a * 0.55})`
+          : `rgba(226, 232, 240, ${a * 0.4})`;
+        ctx.lineWidth = 3 * a + 1;
+        ctx.beginPath();
+        ctx.moveTo(state.trail[i - 1].x, state.trail[i - 1].y);
+        ctx.lineTo(state.trail[i].x, state.trail[i].y);
+        ctx.stroke();
+      }
     }
 
     drawBall(state.ball.x, state.ball.y, ballR(), state.ballSpinAngle);
@@ -547,6 +613,32 @@
 
     requestAnimationFrame(draw);
   }
+
+  // Debug hook for tests: window.__catch.throw(x, y, vx, vy, spinTotal)
+  window.__catch = {
+    state,
+    ringRatioNow: () => ringRatio(performance.now()),
+    // Fire a synthetic throw from (x, y) with the given velocity and spin.
+    throw(x, y, vx, vy, spinTotal = 0) {
+      state.status = 'thrown';
+      state.ball.x = x;
+      state.ball.y = y;
+      state.ballVel = { vx, vy };
+      state.spinTotal = spinTotal;
+      state.curveball = Math.abs(spinTotal) >= SPIN_THRESHOLD;
+      state.thrownAt = performance.now();
+      state.flightStart = state.thrownAt;
+      state.lastRAF = state.thrownAt;
+      state.trail = [{ x, y }];
+    },
+    layout: () => ({
+      W: W(), H: H(),
+      targetX: targetX(), targetY: targetY(),
+      outerR: outerR(), ballR: ballR(),
+      ballStartX: ballStartX(), ballStartY: ballStartY(),
+      SPIN_THRESHOLD,
+    }),
+  };
 
   requestAnimationFrame(draw);
 </script>
