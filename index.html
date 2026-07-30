@@ -253,6 +253,53 @@
     text-align: center;
     min-height: 1.2em;
   }
+  .feasibility {
+    margin-top: 20px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+  }
+  .verdict {
+    display: inline-block;
+    padding: 8px 18px;
+    border-radius: 999px;
+    font-size: 1rem;
+    font-weight: 600;
+    margin: 4px 0 8px;
+  }
+  .verdict.worth {
+    background: rgba(74, 222, 128, 0.15);
+    color: var(--ok);
+    border: 1px solid rgba(74, 222, 128, 0.4);
+  }
+  .verdict.risky {
+    background: rgba(251, 191, 36, 0.15);
+    color: var(--warn);
+    border: 1px solid rgba(251, 191, 36, 0.4);
+  }
+  .verdict.tight {
+    background: rgba(251, 146, 60, 0.15);
+    color: #fb923c;
+    border: 1px solid rgba(251, 146, 60, 0.4);
+  }
+  .verdict.no {
+    background: rgba(248, 113, 113, 0.15);
+    color: var(--danger);
+    border: 1px solid rgba(248, 113, 113, 0.4);
+  }
+  .verdict-detail {
+    color: var(--muted);
+    font-size: 0.85rem;
+    line-height: 1.4;
+  }
+  ul.tips {
+    padding-left: 20px;
+    margin: 8px 0 0;
+    color: var(--muted);
+    font-size: 0.85rem;
+    line-height: 1.5;
+  }
+  ul.tips li { margin-bottom: 8px; }
+  ul.tips strong { color: var(--text); }
 </style>
 </head>
 <body>
@@ -297,6 +344,11 @@
       </div>
     </div>
 
+    <div class="field">
+      <label for="despawn">Time left until despawn (optional, mm:ss)</label>
+      <input type="text" id="despawn" placeholder="e.g. 12:30 or 8" inputmode="numeric" />
+    </div>
+
     <button class="primary" id="calc-btn">Calculate cooldown</button>
     <div class="error" id="err"></div>
   </div>
@@ -310,10 +362,28 @@
       <div class="cooldown-value" id="cd-remaining">–</div>
       <div id="status-chip" class="status waiting">Waiting…</div>
     </div>
+    <div id="feasibility" class="feasibility" style="display:none;">
+      <div class="cooldown-label">Worth it?</div>
+      <div id="verdict-chip" class="verdict">–</div>
+      <div id="verdict-detail" class="verdict-detail">–</div>
+    </div>
     <div class="actions">
       <button class="ghost" id="reset-btn">Reset timer</button>
       <button class="ghost" id="clear-btn">Clear</button>
     </div>
+  </div>
+
+  <div class="panel">
+    <details class="chart">
+      <summary>Spoofer rules of thumb</summary>
+      <ul class="tips">
+        <li><strong>Wait the full cooldown.</strong> Any interaction — spinning stops, throwing balls, feeding berries, joining a raid — before it expires escalates the soft ban.</li>
+        <li><strong>The 8-minute rule.</strong> Once the cooldown is 8 minutes or longer, the community rule is <em>always sit it out</em>. Trying to shave a few seconds off in this window is the classic soft-ban trigger.</li>
+        <li><strong>Add a 20–30 s buffer after landing.</strong> Give the game time to load the new area before you interact — that's built into the "Worth it?" check above.</li>
+        <li><strong>Two-hour cap.</strong> Anything over ~1500 km hits the max 2-hour cooldown — same wait whether it's 1,500 km or the far side of the planet.</li>
+        <li><strong>Despawn window.</strong> Wild Pokémon last up to 30 min from spawn. If your cooldown plus buffer eats most of that, the encounter's already gone.</li>
+      </ul>
+    </details>
   </div>
 
   <div class="panel">
@@ -467,6 +537,22 @@
       chip.textContent = 'Waiting…';
       chip.className = 'status waiting';
     }
+
+    // Feasibility vs the target's despawn timer (if provided). The despawn
+    // clock keeps ticking during the cooldown, so re-evaluate every frame.
+    const feasBox = document.getElementById('feasibility');
+    if (state.despawnSec != null) {
+      const despawnRemaining = state.despawnSec - elapsed;
+      const cooldownRemaining = Math.max(0, remaining);
+      const verdict = feasibility(cooldownRemaining, despawnRemaining);
+      feasBox.style.display = 'block';
+      const chipEl = document.getElementById('verdict-chip');
+      chipEl.textContent = verdict.label;
+      chipEl.className = 'verdict ' + verdict.tier;
+      document.getElementById('verdict-detail').textContent = verdict.detail;
+    } else {
+      feasBox.style.display = 'none';
+    }
   }
 
   function startTimer() {
@@ -478,6 +564,62 @@
     if (v === null || v === undefined) return NaN;
     const n = parseFloat(String(v).trim());
     return Number.isFinite(n) ? n : NaN;
+  }
+
+  // Parse "mm:ss", "m:s", or a plain number (interpreted as minutes) into
+  // seconds. Empty input returns null; invalid input returns NaN.
+  function parseDespawnSeconds(v) {
+    const s = String(v ?? '').trim();
+    if (!s) return null;
+    if (s.includes(':')) {
+      const [mm, ss] = s.split(':');
+      const m = parseFloat(mm), sec = parseFloat(ss);
+      if (!Number.isFinite(m) || !Number.isFinite(sec) || m < 0 || sec < 0 || sec >= 60) return NaN;
+      return Math.round(m * 60 + sec);
+    }
+    const n = parseFloat(s);
+    if (!Number.isFinite(n) || n < 0) return NaN;
+    return Math.round(n * 60);
+  }
+
+  // Buffer after cooldown to load into the encounter cleanly.
+  const CATCH_BUFFER_SEC = 25;
+
+  function feasibility(cooldownSec, despawnSec) {
+    const need = cooldownSec + CATCH_BUFFER_SEC;
+    if (despawnSec < cooldownSec) {
+      return {
+        tier: 'no',
+        label: 'Not worth it',
+        detail: `Cooldown ends ${fmt(cooldownSec - despawnSec)} after despawn — the Pokémon's already gone.`,
+      };
+    }
+    if (despawnSec < cooldownSec + 5) {
+      return {
+        tier: 'no',
+        label: 'Not worth it',
+        detail: `Cooldown ends with only ${fmt(despawnSec - cooldownSec)} left — no time to interact.`,
+      };
+    }
+    if (despawnSec < need) {
+      return {
+        tier: 'tight',
+        label: 'Very tight',
+        detail: `You'll land with ${fmt(despawnSec - cooldownSec)} to spare — under the ${CATCH_BUFFER_SEC}s buffer needed to load in cleanly. Skip unless it's a must-have.`,
+      };
+    }
+    if (despawnSec < need + 60) {
+      return {
+        tier: 'risky',
+        label: 'Risky',
+        detail: `You'll have ~${fmt(despawnSec - cooldownSec)} on the ground. Doable, but no room for a fumbled throw.`,
+      };
+    }
+    return {
+      tier: 'worth',
+      label: 'Worth it',
+      detail: `You'll land with ${fmt(despawnSec - cooldownSec)} of despawn window remaining — comfortable.`,
+    };
   }
 
   document.getElementById('calc-btn').addEventListener('click', () => {
@@ -509,9 +651,16 @@
       km = haversineKm(lat1, lng1, lat2, lng2);
     }
 
+    const despawnSec = parseDespawnSeconds(document.getElementById('despawn').value);
+    if (Number.isNaN(despawnSec)) {
+      err.textContent = 'Despawn timer must be a number of minutes or mm:ss (e.g. 12:30).';
+      return;
+    }
+
     state = {
       km,
       cooldown: cooldownSeconds(km),
+      despawnSec: despawnSec, // seconds until despawn at moment of calc, or null
       startedAt: Date.now(),
     };
     saveState();
