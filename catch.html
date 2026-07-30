@@ -84,27 +84,29 @@
   }
   .scoreboard {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 8px;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 6px;
     margin-bottom: 12px;
   }
   .stat {
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: 8px;
-    padding: 8px 6px;
+    padding: 8px 4px;
     text-align: center;
+    min-width: 0;
   }
   .stat span {
     display: block;
-    font-size: 0.65rem;
+    font-size: 0.6rem;
     color: var(--muted);
     text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.04em;
     margin-bottom: 2px;
+    white-space: nowrap;
   }
   .stat strong {
-    font-size: 1.15rem;
+    font-size: 1.05rem;
     font-variant-numeric: tabular-nums;
   }
   .stage {
@@ -112,7 +114,7 @@
     width: 100%;
     aspect-ratio: 3 / 5;
     max-height: 70vh;
-    background: var(--panel);
+    background: radial-gradient(ellipse at 50% 30%, #223148 0%, #0f172a 100%);
     border: 1px solid var(--border);
     border-radius: 12px;
     overflow: hidden;
@@ -124,6 +126,38 @@
     display: block;
     width: 100%;
     height: 100%;
+  }
+  .mute-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 2;
+    background: rgba(15, 23, 42, 0.6);
+    border: 1px solid var(--border);
+    color: var(--text);
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    font-size: 0.95rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+  }
+  .pokemon-name {
+    position: absolute;
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(15, 23, 42, 0.65);
+    padding: 4px 12px;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    color: var(--muted);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    pointer-events: none;
   }
   .hint {
     text-align: center;
@@ -159,18 +193,21 @@
 
   <header>
     <h1>Excellent Curveball Practice</h1>
-    <div class="subtitle">Aim, speed, spin. Land inside the smallest inner ring.</div>
+    <div class="subtitle">Curve, throw, wobble, catch.</div>
   </header>
 
   <div class="scoreboard">
     <div class="stat"><span>Score</span><strong id="score">0</strong></div>
     <div class="stat"><span>Streak</span><strong id="streak">0</strong></div>
     <div class="stat"><span>Best</span><strong id="best">0</strong></div>
+    <div class="stat"><span>Caught</span><strong id="caught">0</strong></div>
     <div class="stat"><span>XL Curves</span><strong id="excellent">0</strong></div>
   </div>
 
   <div class="stage" id="stage">
     <canvas id="game"></canvas>
+    <div class="pokemon-name" id="pokemon-name">?????</div>
+    <button class="mute-btn" id="mute-btn" aria-label="Toggle sound">🔊</button>
   </div>
 
   <div class="controls">
@@ -178,10 +215,9 @@
   </div>
 
   <p class="hint">
-    The Pokémon jumps left, right, up, down, and closer / farther — lead your target.<br />
     Drag in a circle to add curveball spin, then flick toward the Pokémon.<br />
-    Aim, speed and direction all matter. Curveballs bend — throw off-center to compensate.<br />
-    Land inside the smallest inner ring for an Excellent.
+    Aim, speed, curve, and timing all matter. Bigger tier = better catch odds.<br />
+    Three wobbles per catch — hold your breath.
   </p>
 </div>
 
@@ -210,31 +246,196 @@
   const baseOuterR = () => Math.min(W() * 0.28, 110);
   const baseSize = () => Math.min(60, W() * 0.16);
   const ballR = () => Math.max(22, W() * 0.075);
-
-  // Pokémon movement: three sine waves at non-commensurate periods so the
-  // pattern doesn't repeat, on X, Y, and scale (which reads as depth).
-  function pose(now) {
-    if (state.pokemonFrozen) return state.pokemonFrozen;
-    const ampX = Math.min(60, W() * 0.18);
-    const ampY = 24;
-    const ampScale = 0.26;
-    const dx = Math.sin(now * 0.00233 + 0.7) * ampX;
-    const dy = Math.sin(now * 0.00331 + 1.9) * ampY;
-    const scale = 1 + Math.sin(now * 0.00180 + 0.3) * ampScale;
-    const cx = baseTargetX() + dx;
-    const cy = baseTargetY() + dy;
-    return {
-      cx, cy,
-      outerR: baseOuterR() * scale,
-      size: baseSize() * scale,
-    };
-  }
   const ballStartX = () => W() / 2;
   const ballStartY = () => H() - ballR() - 40;
 
   const SPIN_THRESHOLD = 2 * Math.PI * 1.1; // ~one full loop
   const CYCLE_MS = 1900;
 
+  // ---------- Pokémon roster ----------
+  // Each has a display name, reveal colour, and a silhouette-friendly draw
+  // routine. `color` is used when the reveal happens (caught); otherwise the
+  // Pokémon renders in the shared silhouette grey.
+  const SILHOUETTE = '#243247';
+
+  function drawEyes(cx, cy, r, color) {
+    ctx.fillStyle = '#f8fafc';
+    ctx.beginPath();
+    ctx.arc(cx - r * 0.3, cy - r * 0.1, r * 0.16, 0, 2 * Math.PI);
+    ctx.arc(cx + r * 0.3, cy - r * 0.1, r * 0.16, 0, 2 * Math.PI);
+    ctx.fill();
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(cx - r * 0.3, cy - r * 0.1, r * 0.075, 0, 2 * Math.PI);
+    ctx.arc(cx + r * 0.3, cy - r * 0.1, r * 0.075, 0, 2 * Math.PI);
+    ctx.fill();
+  }
+
+  const POKEMON = [
+    { name: 'Ratatta', color: '#a855f7', draw(cx, cy, r, fill) {
+      ctx.fillStyle = fill;
+      ctx.beginPath(); ctx.arc(cx, cy, r, 0, 2 * Math.PI); ctx.fill();
+      // cat ears
+      ctx.beginPath();
+      ctx.moveTo(cx - r * 0.7, cy - r * 0.5);
+      ctx.lineTo(cx - r * 0.35, cy - r * 1.15);
+      ctx.lineTo(cx - r * 0.15, cy - r * 0.65);
+      ctx.closePath();
+      ctx.moveTo(cx + r * 0.7, cy - r * 0.5);
+      ctx.lineTo(cx + r * 0.35, cy - r * 1.15);
+      ctx.lineTo(cx + r * 0.15, cy - r * 0.65);
+      ctx.closePath();
+      ctx.fill();
+      drawEyes(cx, cy, r, '#0f172a');
+    }},
+    { name: 'Pidgey', color: '#c2410c', draw(cx, cy, r, fill) {
+      ctx.fillStyle = fill;
+      ctx.beginPath();
+      ctx.ellipse(cx, cy + r * 0.05, r * 1.05, r * 0.9, 0, 0, 2 * Math.PI);
+      ctx.fill();
+      // beak
+      ctx.beginPath();
+      ctx.moveTo(cx - r * 0.16, cy + r * 0.1);
+      ctx.lineTo(cx + r * 0.16, cy + r * 0.1);
+      ctx.lineTo(cx, cy + r * 0.42);
+      ctx.closePath();
+      ctx.fillStyle = '#fbbf24';
+      ctx.fill();
+      // topknot tuft
+      ctx.fillStyle = fill;
+      ctx.beginPath();
+      ctx.arc(cx - r * 0.18, cy - r * 0.85, r * 0.18, 0, 2 * Math.PI);
+      ctx.arc(cx + r * 0.05, cy - r * 0.95, r * 0.22, 0, 2 * Math.PI);
+      ctx.arc(cx + r * 0.28, cy - r * 0.82, r * 0.16, 0, 2 * Math.PI);
+      ctx.fill();
+      drawEyes(cx, cy - r * 0.2, r, '#0f172a');
+    }},
+    { name: 'Zubat', color: '#3b82f6', draw(cx, cy, r, fill) {
+      ctx.fillStyle = fill;
+      // body
+      ctx.beginPath(); ctx.arc(cx, cy, r * 0.7, 0, 2 * Math.PI); ctx.fill();
+      // wings
+      ctx.beginPath();
+      ctx.moveTo(cx - r * 0.5, cy - r * 0.1);
+      ctx.quadraticCurveTo(cx - r * 1.4, cy - r * 0.4, cx - r * 1.1, cy + r * 0.55);
+      ctx.quadraticCurveTo(cx - r * 0.9, cy + r * 0.1, cx - r * 0.5, cy + r * 0.3);
+      ctx.closePath();
+      ctx.moveTo(cx + r * 0.5, cy - r * 0.1);
+      ctx.quadraticCurveTo(cx + r * 1.4, cy - r * 0.4, cx + r * 1.1, cy + r * 0.55);
+      ctx.quadraticCurveTo(cx + r * 0.9, cy + r * 0.1, cx + r * 0.5, cy + r * 0.3);
+      ctx.closePath();
+      ctx.fill();
+      // fangs
+      ctx.fillStyle = '#f8fafc';
+      ctx.beginPath();
+      ctx.moveTo(cx - r * 0.18, cy + r * 0.1);
+      ctx.lineTo(cx - r * 0.05, cy + r * 0.4);
+      ctx.lineTo(cx - r * 0.05, cy + r * 0.1);
+      ctx.closePath();
+      ctx.moveTo(cx + r * 0.18, cy + r * 0.1);
+      ctx.lineTo(cx + r * 0.05, cy + r * 0.4);
+      ctx.lineTo(cx + r * 0.05, cy + r * 0.1);
+      ctx.closePath();
+      ctx.fill();
+    }},
+    { name: 'Caterpie', color: '#84cc16', draw(cx, cy, r, fill) {
+      ctx.fillStyle = fill;
+      // three segments
+      ctx.beginPath(); ctx.arc(cx - r * 0.6, cy + r * 0.25, r * 0.55, 0, 2 * Math.PI); ctx.fill();
+      ctx.beginPath(); ctx.arc(cx + r * 0.05, cy + r * 0.15, r * 0.6, 0, 2 * Math.PI); ctx.fill();
+      ctx.beginPath(); ctx.arc(cx + r * 0.7, cy, r * 0.72, 0, 2 * Math.PI); ctx.fill();
+      // antenna
+      ctx.strokeStyle = fill;
+      ctx.lineWidth = Math.max(2, r * 0.08);
+      ctx.beginPath();
+      ctx.moveTo(cx + r * 0.85, cy - r * 0.6);
+      ctx.lineTo(cx + r * 0.65, cy - r * 0.15);
+      ctx.stroke();
+      ctx.fillStyle = fill;
+      ctx.beginPath(); ctx.arc(cx + r * 0.9, cy - r * 0.7, r * 0.12, 0, 2 * Math.PI); ctx.fill();
+      // eye (single, right side)
+      ctx.fillStyle = '#f8fafc';
+      ctx.beginPath(); ctx.arc(cx + r * 0.85, cy - r * 0.05, r * 0.14, 0, 2 * Math.PI); ctx.fill();
+      ctx.fillStyle = '#0f172a';
+      ctx.beginPath(); ctx.arc(cx + r * 0.85, cy - r * 0.05, r * 0.07, 0, 2 * Math.PI); ctx.fill();
+    }},
+    { name: 'Magikarp', color: '#ef4444', draw(cx, cy, r, fill) {
+      ctx.fillStyle = fill;
+      // body: horizontal ellipse
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, r * 1.15, r * 0.75, 0, 0, 2 * Math.PI);
+      ctx.fill();
+      // tail
+      ctx.beginPath();
+      ctx.moveTo(cx + r * 0.9, cy);
+      ctx.lineTo(cx + r * 1.55, cy - r * 0.55);
+      ctx.lineTo(cx + r * 1.55, cy + r * 0.55);
+      ctx.closePath();
+      ctx.fill();
+      // fin on top
+      ctx.beginPath();
+      ctx.moveTo(cx - r * 0.15, cy - r * 0.55);
+      ctx.lineTo(cx + r * 0.05, cy - r * 1);
+      ctx.lineTo(cx + r * 0.25, cy - r * 0.55);
+      ctx.closePath();
+      ctx.fill();
+      drawEyes(cx - r * 0.4, cy - r * 0.05, r * 0.9, '#0f172a');
+    }},
+  ];
+
+  // ---------- Audio (Web Audio) ----------
+  let audioCtx = null;
+  let audioEnabled = (localStorage.getItem('catch-mute') !== '1');
+
+  function ensureAudio() {
+    if (!audioCtx) {
+      try {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      } catch { audioCtx = null; }
+    }
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  }
+
+  function tone(freq, dur, opts = {}) {
+    if (!audioEnabled || !audioCtx) return;
+    const t = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = opts.type || 'sine';
+    osc.frequency.setValueAtTime(freq, t);
+    if (opts.slideTo) osc.frequency.exponentialRampToValueAtTime(opts.slideTo, t + dur);
+    const g = opts.gain ?? 0.14;
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.exponentialRampToValueAtTime(g, t + 0.008);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start(t);
+    osc.stop(t + dur + 0.02);
+  }
+
+  const SFX = {
+    hitExcellent() { tone(880, 0.18, { type: 'sine', gain: 0.16 }); setTimeout(() => tone(1320, 0.22), 90); },
+    hitGreat()     { tone(660, 0.14); setTimeout(() => tone(880, 0.16), 80); },
+    hitNice()      { tone(523, 0.14); },
+    hitPlain()     { tone(392, 0.09, { type: 'triangle' }); },
+    miss()         { tone(200, 0.28, { type: 'triangle', slideTo: 90, gain: 0.12 }); },
+    impact()       { tone(140, 0.08, { type: 'square', gain: 0.1 }); },
+    wobble()       { tone(240, 0.06, { type: 'sine', gain: 0.09 }); },
+    caught()       { tone(523, 0.14); setTimeout(() => tone(659, 0.14), 110); setTimeout(() => tone(784, 0.28), 220); },
+    escape()       { tone(320, 0.22, { type: 'sawtooth', slideTo: 110, gain: 0.11 }); },
+    curveEngaged() { tone(660, 0.09, { type: 'triangle', gain: 0.09 }); setTimeout(() => tone(990, 0.09, { type: 'triangle', gain: 0.09 }), 60); },
+  };
+
+  const muteBtn = document.getElementById('mute-btn');
+  muteBtn.textContent = audioEnabled ? '🔊' : '🔇';
+  muteBtn.addEventListener('click', () => {
+    audioEnabled = !audioEnabled;
+    muteBtn.textContent = audioEnabled ? '🔊' : '🔇';
+    localStorage.setItem('catch-mute', audioEnabled ? '0' : '1');
+    if (audioEnabled) ensureAudio();
+  });
+
+  // ---------- State ----------
   const state = {
     status: 'idle',
     ball: { x: 0, y: 0 },
@@ -243,6 +444,7 @@
     lastAngle: 0,
     spinTotal: 0,
     curveball: false,
+    curveNotified: false,
     ringPhaseStart: performance.now(),
     frozenRingRatio: null,
     frozenPose: null,
@@ -251,16 +453,45 @@
     flightStart: 0,
     lastRAF: 0,
     trail: [],
+    impactFlash: null, // { x, y, start, size }
     verdict: null,
+    hitTier: null,
+    isCurveballHit: false,
+
+    // Capture animation
+    captureStage: null, // 'suck' | 'wobble1' | 'wobble2' | 'wobble3' | 'caught' | 'escape'
+    captureStageStart: 0,
+    wobbleWillHold: [false, false, false],
+    capturedThisRound: false,
+
+    // Roster / stats
+    pokemonIndex: Math.floor(Math.random() * POKEMON.length),
+    revealed: false,
     score: 0,
     streak: 0,
     best: 0,
+    caught: 0,
     excellent: 0,
+
+    // Ball rendering
     ballSpinAngle: 0,
     ballSpinVel: 0,
+    ballWobble: 0, // tilt while wobbling
+
     lastMoveT: 0,
     lastVel: { vx: 0, vy: 0 },
   };
+
+  function currentPokemon() { return POKEMON[state.pokemonIndex]; }
+
+  function pickNextPokemon() {
+    // Avoid immediate repeat when possible.
+    let idx = Math.floor(Math.random() * POKEMON.length);
+    if (POKEMON.length > 1 && idx === state.pokemonIndex) idx = (idx + 1) % POKEMON.length;
+    state.pokemonIndex = idx;
+    state.revealed = false;
+    document.getElementById('pokemon-name').textContent = '?????';
+  }
 
   function resetBall() {
     state.ball.x = ballStartX();
@@ -270,18 +501,24 @@
     state.dragStart = null;
     state.spinTotal = 0;
     state.curveball = false;
+    state.curveNotified = false;
     state.frozenRingRatio = null;
     state.frozenPose = null;
     state.trail = [];
+    state.impactFlash = null;
     state.ballSpinAngle = 0;
     state.ballSpinVel = 0;
+    state.ballWobble = 0;
     state.lastVel = { vx: 0, vy: 0 };
+    state.captureStage = null;
+    state.hitTier = null;
+    state.isCurveballHit = false;
+    state.capturedThisRound = false;
   }
   resetBall();
 
   function ringRatio(now) {
     const t = ((now - state.ringPhaseStart) % CYCLE_MS) / CYCLE_MS;
-    // 0.2 (smallest) at t=0.5, 1.0 at t=0 and t=1
     return 0.6 + 0.4 * Math.cos(t * 2 * Math.PI);
   }
 
@@ -292,7 +529,29 @@
     return { label: 'Miss', pts: 0, color: '#f87171' };
   }
 
+  // Pokémon movement: three sine waves at non-commensurate periods so the
+  // pattern doesn't repeat, on X, Y, and scale, plus a subtle breathing bob.
+  function pose(now) {
+    if (state.pokemonFrozen) return state.pokemonFrozen;
+    const ampX = Math.min(60, W() * 0.18);
+    const ampY = 24;
+    const ampScale = 0.26;
+    const breathe = 1 + Math.sin(now * 0.005) * 0.035;
+    const dx = Math.sin(now * 0.00233 + 0.7) * ampX;
+    const dy = Math.sin(now * 0.00331 + 1.9) * ampY;
+    const depth = 1 + Math.sin(now * 0.00180 + 0.3) * ampScale;
+    const scale = depth * breathe;
+    return {
+      cx: baseTargetX() + dx,
+      cy: baseTargetY() + dy,
+      outerR: baseOuterR() * scale,
+      size: baseSize() * scale,
+    };
+  }
+
+  // ---------- Input ----------
   canvas.addEventListener('pointerdown', e => {
+    ensureAudio(); // first user gesture unlocks audio
     if (state.status !== 'idle') return;
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
@@ -308,6 +567,7 @@
     state.lastAngle = Math.atan2(y - state.ball.y, x - state.ball.x);
     state.spinTotal = 0;
     state.curveball = false;
+    state.curveNotified = false;
     state.ballSpinVel = 0;
     state.lastMoveT = performance.now();
     state.lastVel = { vx: 0, vy: 0 };
@@ -322,7 +582,6 @@
     const y = e.clientY - rect.top;
     const now = performance.now();
 
-    // spin: measure angular change around ball center (as it currently is)
     const angle = Math.atan2(y - state.ball.y, x - state.ball.x);
     let da = angle - state.lastAngle;
     if (da > Math.PI) da -= 2 * Math.PI;
@@ -331,9 +590,13 @@
     state.lastAngle = angle;
     state.ballSpinVel = da * 8;
 
-    if (Math.abs(state.spinTotal) >= SPIN_THRESHOLD) state.curveball = true;
+    if (Math.abs(state.spinTotal) >= SPIN_THRESHOLD) {
+      if (!state.curveball) {
+        state.curveball = true;
+        if (!state.curveNotified) { state.curveNotified = true; SFX.curveEngaged(); }
+      }
+    }
 
-    // velocity for release
     const dt = Math.max(1, now - state.lastMoveT);
     state.lastVel = {
       vx: (x - state.lastPos.x) / dt,
@@ -342,7 +605,6 @@
     state.lastMoveT = now;
     state.lastPos = { x, y };
 
-    // move ball to pointer, clamped
     state.ball.x = Math.max(ballR(), Math.min(W() - ballR(), x));
     state.ball.y = Math.max(ballR(), Math.min(H() - ballR(), y));
   });
@@ -351,23 +613,14 @@
     if (state.status !== 'dragging') return;
     try { canvas.releasePointerCapture(e.pointerId); } catch {}
     const { vx, vy } = state.lastVel;
-    // Require upward flick.
-    if (vy > -0.4) {
-      returnBall();
-      return;
-    }
-    // Ball must have travelled up somewhat too.
-    if (state.ball.y > ballStartY() - 20) {
-      returnBall();
-      return;
-    }
+    if (vy > -0.4) { returnBall(); return; }
+    if (state.ball.y > ballStartY() - 20) { returnBall(); return; }
     state.status = 'thrown';
     state.thrownAt = performance.now();
     state.flightStart = state.thrownAt;
     state.lastRAF = state.thrownAt;
-    // Clamp velocity so ridiculously fast flicks don't teleport the ball.
     const speed = Math.hypot(vx, vy);
-    const MAX_SPEED = 2.4; // px/ms
+    const MAX_SPEED = 2.4;
     const scale = speed > MAX_SPEED ? MAX_SPEED / speed : 1;
     state.ballVel = { vx: vx * scale, vy: vy * scale };
     state.trail = [{ x: state.ball.x, y: state.ball.y }];
@@ -381,9 +634,16 @@
     state.returnStart = performance.now();
   }
 
+  // ---------- Judgement + capture ----------
+  const CATCH_BASE = { Excellent: 0.85, Great: 0.6, Nice: 0.35, Hit: 0.15 };
+  const CURVE_MULT = 1.4;
+
+  function catchProbability(tierLabel, curveball) {
+    const base = CATCH_BASE[tierLabel] ?? 0;
+    return Math.min(0.98, base * (curveball ? CURVE_MULT : 1));
+  }
+
   function completeThrow(distFromCenter, ratioAtImpact, outerRAtImpact) {
-    // ratioAtImpact is the inner ring's ratio at the moment of collision,
-    // or null if the ball never hit the target.
     let tier;
     const or = outerRAtImpact != null ? outerRAtImpact : baseOuterR();
     if (ratioAtImpact == null || distFromCenter > or) {
@@ -391,42 +651,77 @@
     } else {
       const innerR = or * ratioAtImpact;
       if (distFromCenter <= innerR) {
-        // Landed inside the shrinking ring — score based on ring size.
         if (ratioAtImpact <= 0.33) tier = { label: 'Excellent', pts: 100, color: '#4ade80' };
         else if (ratioAtImpact <= 0.55) tier = { label: 'Great', pts: 50, color: '#22d3ee' };
         else if (ratioAtImpact <= 0.80) tier = { label: 'Nice', pts: 20, color: '#fbbf24' };
         else tier = { label: 'Hit', pts: 10, color: '#94a3b8' };
       } else {
-        // Hit the Pokémon but outside the inner ring — small credit, no bonus.
         tier = { label: 'Hit', pts: 5, color: '#94a3b8' };
       }
     }
     state.frozenRingRatio = ratioAtImpact != null ? ratioAtImpact : ringRatio(performance.now());
+    state.hitTier = tier;
+    state.isCurveballHit = state.curveball && tier.label !== 'Miss';
+
     let pts = tier.pts;
-    if (state.curveball && pts > 0) pts = Math.round(pts * 1.5);
+    if (state.isCurveballHit) pts = Math.round(pts * 1.5);
     state.score += pts;
-    if (tier.label === 'Miss') {
-      state.streak = 0;
-    } else if (pts > 0) {
+    if (tier.label === 'Miss') state.streak = 0;
+    else if (pts > 0) {
       state.streak += 1;
       if (state.streak > state.best) state.best = state.streak;
     }
-    if (tier.label === 'Excellent' && state.curveball) state.excellent += 1;
+    if (tier.label === 'Excellent' && state.isCurveballHit) state.excellent += 1;
+
+    // Sound cue for the impact itself.
+    if (tier.label === 'Miss') { SFX.miss(); }
+    else {
+      SFX.impact();
+      const sfx = { Excellent: SFX.hitExcellent, Great: SFX.hitGreat, Nice: SFX.hitNice, Hit: SFX.hitPlain }[tier.label];
+      setTimeout(sfx, 60);
+    }
+
     state.verdict = {
-      label: (state.curveball && tier.label !== 'Miss' ? 'Curveball ' : '') + tier.label,
+      label: (state.isCurveballHit ? 'Curveball ' : '') + tier.label,
       pts,
       color: tier.color,
       time: performance.now(),
     };
+
+    if (tier.label === 'Miss') {
+      state.status = 'result';
+      state.impactFlash = null;
+      setTimeout(nextRound, 1100);
+      return;
+    }
+
+    // Enter capture sequence. Roll each wobble upfront so the animation
+    // just plays them out; per-wobble hold probability derived so total
+    // catch probability matches the tier + curveball multiplier.
+    const p = catchProbability(tier.label, state.isCurveballHit);
+    const perWobble = Math.pow(p, 1 / 3);
+    state.wobbleWillHold = [0, 1, 2].map(() => Math.random() < perWobble);
+    state.capturedThisRound = state.wobbleWillHold.every(Boolean);
+    state.captureStage = 'suck';
+    state.captureStageStart = performance.now();
+    state.status = 'capturing';
+    // The ball is now at the impact point (state.ball.x/y); it stays there
+    // for the suck, then rests at the Pokémon center for wobbles.
+    state.impactFlash = { x: state.ball.x, y: state.ball.y, start: performance.now() };
     updateUI();
-    state.status = 'result';
-    setTimeout(resetBall, 1100);
+  }
+
+  function nextRound() {
+    updateUI();
+    pickNextPokemon();
+    resetBall();
   }
 
   function updateUI() {
     document.getElementById('score').textContent = state.score;
     document.getElementById('streak').textContent = state.streak;
     document.getElementById('best').textContent = state.best;
+    document.getElementById('caught').textContent = state.caught;
     document.getElementById('excellent').textContent = state.excellent;
   }
 
@@ -434,102 +729,266 @@
     state.score = 0;
     state.streak = 0;
     state.best = 0;
+    state.caught = 0;
     state.excellent = 0;
     updateUI();
+    pickNextPokemon();
     resetBall();
   });
 
-  function drawBall(x, y, r, angle) {
+  // ---------- Rendering ----------
+  function drawBall(x, y, r, angle, opts = {}) {
+    const openness = opts.openness ?? 0; // 0 closed, 1 fully open (split top/bottom apart)
+    const tilt = opts.tilt ?? 0;
     ctx.save();
     ctx.translate(x, y);
-    ctx.rotate(angle);
+    ctx.rotate(angle + tilt);
+
+    if (opts.glow) {
+      const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, r * 2.4);
+      grad.addColorStop(0, 'rgba(167, 139, 250, 0.5)');
+      grad.addColorStop(1, 'rgba(167, 139, 250, 0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(0, 0, r * 2.4, 0, 2 * Math.PI);
+      ctx.fill();
+    }
+
+    const sep = openness * r * 0.9;
+
+    // top half (red)
+    ctx.save();
+    ctx.translate(0, -sep);
     ctx.beginPath();
     ctx.arc(0, 0, r, Math.PI, 2 * Math.PI);
     ctx.fillStyle = '#ef4444';
     ctx.fill();
+    ctx.restore();
+
+    // bottom half (white)
+    ctx.save();
+    ctx.translate(0, sep);
     ctx.beginPath();
     ctx.arc(0, 0, r, 0, Math.PI);
     ctx.fillStyle = '#f8fafc';
     ctx.fill();
-    ctx.strokeStyle = '#0f172a';
-    ctx.lineWidth = Math.max(2, r * 0.12);
+    ctx.restore();
+
+    if (openness < 0.02) {
+      // band + button (only when closed)
+      ctx.strokeStyle = '#0f172a';
+      ctx.lineWidth = Math.max(2, r * 0.12);
+      ctx.beginPath();
+      ctx.moveTo(-r, 0);
+      ctx.lineTo(r, 0);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(0, 0, r * 0.28, 0, 2 * Math.PI);
+      ctx.fillStyle = '#0f172a';
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(0, 0, r * 0.16, 0, 2 * Math.PI);
+      ctx.fillStyle = '#e2e8f0';
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function drawShadow(cx, cy, r) {
+    ctx.save();
+    ctx.globalAlpha = 0.3;
+    ctx.fillStyle = '#000';
     ctx.beginPath();
-    ctx.moveTo(-r, 0);
-    ctx.lineTo(r, 0);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(0, 0, r * 0.28, 0, 2 * Math.PI);
-    ctx.fillStyle = '#0f172a';
-    ctx.fill();
-    ctx.beginPath();
-    ctx.arc(0, 0, r * 0.16, 0, 2 * Math.PI);
-    ctx.fillStyle = '#e2e8f0';
+    ctx.ellipse(cx, cy + r * 0.9, r * 0.9, r * 0.2, 0, 0, 2 * Math.PI);
     ctx.fill();
     ctx.restore();
   }
 
-  function drawPokemon(cx, cy, r) {
-    // simple silhouette blob
-    ctx.fillStyle = '#334155';
+  function drawImpactFlash(now) {
+    const f = state.impactFlash;
+    if (!f) return;
+    const age = (now - f.start) / 250;
+    if (age >= 1) { state.impactFlash = null; return; }
+    const p = age;
+    const r = 10 + 60 * p;
+    ctx.save();
+    ctx.globalAlpha = (1 - p) * 0.85;
+    ctx.strokeStyle = '#f8fafc';
+    ctx.lineWidth = 3;
     ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, 2 * Math.PI);
-    ctx.fill();
-    // ears
-    ctx.beginPath();
-    ctx.moveTo(cx - r * 0.7, cy - r * 0.5);
-    ctx.lineTo(cx - r * 0.35, cy - r * 1.15);
-    ctx.lineTo(cx - r * 0.15, cy - r * 0.65);
-    ctx.closePath();
-    ctx.moveTo(cx + r * 0.7, cy - r * 0.5);
-    ctx.lineTo(cx + r * 0.35, cy - r * 1.15);
-    ctx.lineTo(cx + r * 0.15, cy - r * 0.65);
-    ctx.closePath();
-    ctx.fill();
-    // eyes
+    ctx.arc(f.x, f.y, r, 0, 2 * Math.PI);
+    ctx.stroke();
+    ctx.globalAlpha = (1 - p) * 0.4;
     ctx.fillStyle = '#f8fafc';
     ctx.beginPath();
-    ctx.arc(cx - r * 0.3, cy - r * 0.1, r * 0.15, 0, 2 * Math.PI);
-    ctx.arc(cx + r * 0.3, cy - r * 0.1, r * 0.15, 0, 2 * Math.PI);
+    ctx.arc(f.x, f.y, r * 0.6, 0, 2 * Math.PI);
     ctx.fill();
-    ctx.fillStyle = '#0f172a';
-    ctx.beginPath();
-    ctx.arc(cx - r * 0.3, cy - r * 0.1, r * 0.07, 0, 2 * Math.PI);
-    ctx.arc(cx + r * 0.3, cy - r * 0.1, r * 0.07, 0, 2 * Math.PI);
-    ctx.fill();
+    ctx.restore();
+  }
+
+  // Capture animation state machine. Returns { skipBallDraw, pokemonScale, ballOverride }.
+  function updateCapture(now, livePose) {
+    const s = state.captureStage;
+    const elapsed = now - state.captureStageStart;
+    const p = state.frozenPose || livePose;
+
+    if (s === 'suck') {
+      const dur = 400;
+      const t = Math.min(1, elapsed / dur);
+      // Ball glides from impact point to Pokémon center; opens; sucks in.
+      state.ball.x = state.ball.x + (p.cx - state.ball.x) * t * 0.5;
+      state.ball.y = state.ball.y + (p.cy - state.ball.y) * t * 0.5;
+      const openness = Math.sin(t * Math.PI) * 0.9; // open then close
+      const pokemonScale = 1 - t;
+      if (t >= 1) {
+        state.ball.x = p.cx;
+        state.ball.y = p.cy;
+        state.captureStage = 'wobble1';
+        state.captureStageStart = now;
+        SFX.wobble();
+      }
+      return { pokemonScale, ballOpenness: openness, ballTilt: 0 };
+    }
+
+    if (s === 'wobble1' || s === 'wobble2' || s === 'wobble3') {
+      const dur = 550;
+      const t = Math.min(1, elapsed / dur);
+      // Tilt: -1 → +1 → -1 over the wobble; scaled by amplitude.
+      const tilt = Math.sin(t * Math.PI * 2) * 0.35;
+      state.ball.x = p.cx;
+      state.ball.y = p.cy;
+      if (t >= 1) {
+        // Decide outcome of this wobble.
+        const idx = { wobble1: 0, wobble2: 1, wobble3: 2 }[s];
+        const held = state.wobbleWillHold[idx];
+        if (!held) {
+          state.captureStage = 'escape';
+          state.captureStageStart = now;
+          SFX.escape();
+        } else if (s === 'wobble3') {
+          state.captureStage = 'caught';
+          state.captureStageStart = now;
+          state.caught += 1;
+          state.revealed = true;
+          document.getElementById('pokemon-name').textContent =
+            currentPokemon().name.toUpperCase();
+          SFX.caught();
+          state.verdict = {
+            label: state.isCurveballHit ? 'Curveball catch!' : 'Gotcha!',
+            pts: state.verdict.pts + 25,
+            color: '#4ade80',
+            time: performance.now(),
+          };
+          state.score += 25;
+          updateUI();
+        } else {
+          state.captureStage = s === 'wobble1' ? 'wobble2' : 'wobble3';
+          state.captureStageStart = now;
+          SFX.wobble();
+        }
+      }
+      return { pokemonScale: 0, ballOpenness: 0, ballTilt: tilt };
+    }
+
+    if (s === 'caught') {
+      const dur = 900;
+      const t = Math.min(1, elapsed / dur);
+      state.ball.x = p.cx;
+      state.ball.y = p.cy;
+      if (t >= 1) {
+        state.status = 'result';
+        setTimeout(nextRound, 500);
+      }
+      return { pokemonScale: 0, ballOpenness: 0, ballTilt: 0, sparkle: t };
+    }
+
+    if (s === 'escape') {
+      const dur = 700;
+      const t = Math.min(1, elapsed / dur);
+      // Ball opens; Pokémon scales back to full.
+      const openness = Math.min(1, t * 2);
+      const pokemonScale = t;
+      state.ball.x = p.cx + Math.sin(t * Math.PI * 3) * 6 * (1 - t);
+      state.ball.y = p.cy + t * 40; // ball falls away
+      state.verdict = {
+        label: 'Broke free!',
+        pts: state.verdict ? state.verdict.pts : 0,
+        color: '#f87171',
+        time: performance.now(),
+      };
+      if (t >= 1) {
+        state.status = 'result';
+        setTimeout(nextRound, 500);
+      }
+      return { pokemonScale, ballOpenness: openness, ballTilt: 0 };
+    }
+
+    return null;
+  }
+
+  function drawSparkles(cx, cy, r, t) {
+    ctx.save();
+    ctx.globalAlpha = 1 - t;
+    ctx.fillStyle = '#fbbf24';
+    for (let i = 0; i < 6; i++) {
+      const a = i / 6 * 2 * Math.PI + t * 2;
+      const dist = r * (0.5 + t * 1.2);
+      const x = cx + Math.cos(a) * dist;
+      const y = cy + Math.sin(a) * dist;
+      ctx.beginPath();
+      ctx.arc(x, y, 3, 0, 2 * Math.PI);
+      ctx.fill();
+    }
+    ctx.restore();
   }
 
   function draw(now) {
     const w = W(), h = H();
     ctx.clearRect(0, 0, w, h);
 
-    // Freeze pose at impact so the result banner shows exactly what
-    // happened; otherwise, the Pokémon keeps drifting live.
-    const p = state.status === 'result' && state.frozenPose
+    const livePose = (state.status === 'result' && state.frozenPose)
       ? state.frozenPose
-      : pose(now);
-    const or = p.outerR;
+      : (state.status === 'capturing' && state.frozenPose ? state.frozenPose : pose(now));
 
-    // Pokemon
-    drawPokemon(p.cx, p.cy, p.size);
+    // If capturing, run the sequence and get overrides.
+    let captureOut = null;
+    if (state.status === 'capturing') {
+      captureOut = updateCapture(now, livePose);
+    }
 
-    // Outer ring
-    ctx.strokeStyle = 'rgba(148, 163, 184, 0.3)';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(p.cx, p.cy, or, 0, 2 * Math.PI);
-    ctx.stroke();
+    // Draw Pokémon (may be scaled during capture)
+    const pokemonScale = captureOut ? captureOut.pokemonScale : 1;
+    const pk = currentPokemon();
+    if (pokemonScale > 0.01) {
+      const size = livePose.size * pokemonScale;
+      const fill = state.revealed ? pk.color : SILHOUETTE;
+      pk.draw(livePose.cx, livePose.cy, size, fill);
+    }
 
-    // Inner target ring — live during flight, frozen during result banner.
-    const ratio = state.status === 'result'
-      ? state.frozenRingRatio
-      : ringRatio(now);
-    const innerR = or * ratio;
-    const tier = tierForRatio(ratio);
-    ctx.strokeStyle = tier.color;
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.arc(p.cx, p.cy, innerR, 0, 2 * Math.PI);
-    ctx.stroke();
+    // Rings (only if Pokémon is visible-ish and we're not mid-catch cheer)
+    if (state.captureStage !== 'caught') {
+      const or = livePose.outerR * (state.status === 'capturing' ? Math.max(0, pokemonScale) : 1);
+      if (or > 3 && state.captureStage !== 'wobble1' && state.captureStage !== 'wobble2' && state.captureStage !== 'wobble3') {
+        // Outer ring
+        ctx.strokeStyle = 'rgba(148, 163, 184, 0.3)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(livePose.cx, livePose.cy, or, 0, 2 * Math.PI);
+        ctx.stroke();
+
+        // Inner ring
+        const ratio = state.status === 'result' || state.status === 'capturing'
+          ? (state.frozenRingRatio ?? ringRatio(now))
+          : ringRatio(now);
+        const innerR = or * ratio;
+        const tier = tierForRatio(ratio);
+        ctx.strokeStyle = tier.color;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(livePose.cx, livePose.cy, innerR, 0, 2 * Math.PI);
+        ctx.stroke();
+      }
+    }
 
     // Spin progress meter around ball while dragging
     if (state.status === 'dragging') {
@@ -545,22 +1004,15 @@
       ctx.stroke();
     }
 
-    // Physics-based throw
+    // Physics
     if (state.status === 'thrown') {
       const dt = Math.min(32, now - state.lastRAF);
       state.lastRAF = now;
-
-      // Gravity — light downward pull so weak throws fall short.
       const GRAVITY = 0.0009;
       state.ballVel.vy += GRAVITY * dt;
-
-      // Curveball: perpendicular acceleration in the direction the ball
-      // was spun. Sign of spinTotal picks the side; magnitude scales with
-      // how much spin was built up (capped at ~2 full loops).
       if (state.curveball) {
         const spd = Math.hypot(state.ballVel.vx, state.ballVel.vy);
         if (spd > 0.01) {
-          // 90° clockwise rotation of velocity direction (in screen coords).
           const perpX = -state.ballVel.vy / spd;
           const perpY = state.ballVel.vx / spd;
           const spinFactor = Math.min(1.5, Math.abs(state.spinTotal) / SPIN_THRESHOLD);
@@ -571,7 +1023,6 @@
           state.ballVel.vy += perpY * a * dt;
         }
       }
-
       state.ball.x += state.ballVel.vx * dt;
       state.ball.y += state.ballVel.vy * dt;
       state.ballSpinAngle += (state.curveball ? 0.35 : 0.08);
@@ -579,20 +1030,19 @@
       state.trail.push({ x: state.ball.x, y: state.ball.y });
       if (state.trail.length > 40) state.trail.shift();
 
-      // Collision uses the Pokémon's live pose (it moves during the throw).
-      const dx = state.ball.x - p.cx;
-      const dy = state.ball.y - p.cy;
+      const dx = state.ball.x - livePose.cx;
+      const dy = state.ball.y - livePose.cy;
       const dist = Math.hypot(dx, dy);
-      if (dist <= or) {
-        state.frozenPose = { cx: p.cx, cy: p.cy, outerR: p.outerR, size: p.size };
-        completeThrow(dist, ringRatio(now), or);
+      if (dist <= livePose.outerR) {
+        state.frozenPose = { cx: livePose.cx, cy: livePose.cy, outerR: livePose.outerR, size: livePose.size };
+        completeThrow(dist, ringRatio(now), livePose.outerR);
       } else if (
         state.ball.x < -60 || state.ball.x > w + 60 ||
         state.ball.y > h + 60 || state.ball.y < -200 ||
         (now - state.flightStart) > 3000
       ) {
-        state.frozenPose = { cx: p.cx, cy: p.cy, outerR: p.outerR, size: p.size };
-        completeThrow(Infinity, null, or);
+        state.frozenPose = { cx: livePose.cx, cy: livePose.cy, outerR: livePose.outerR, size: livePose.size };
+        completeThrow(Infinity, null, livePose.outerR);
       }
     } else if (state.status === 'returning') {
       const dt = (now - state.returnStart) / 300;
@@ -606,8 +1056,11 @@
       state.ballSpinVel *= 0.9;
     }
 
+    // Impact flash on the ring's outer edge
+    if (state.impactFlash) drawImpactFlash(now);
+
     // Trail behind the ball during flight
-    if (state.trail && state.trail.length > 1) {
+    if (state.trail && state.trail.length > 1 && state.status === 'thrown') {
       ctx.lineCap = 'round';
       for (let i = 1; i < state.trail.length; i++) {
         const a = i / state.trail.length;
@@ -622,21 +1075,38 @@
       }
     }
 
-    drawBall(state.ball.x, state.ball.y, ballR(), state.ballSpinAngle);
+    // Ball
+    const showBall = !(state.status === 'capturing' && (state.captureStage === 'suck' || state.captureStage === 'wobble1' || state.captureStage === 'wobble2' || state.captureStage === 'wobble3' || state.captureStage === 'caught' || state.captureStage === 'escape'))
+      || true; // always render the ball; capture uses openness/tilt to shape it
+    if (showBall) {
+      const opts = { glow: (state.curveball && (state.status === 'dragging' || state.status === 'thrown')) };
+      if (captureOut) {
+        opts.openness = captureOut.ballOpenness || 0;
+        opts.tilt = captureOut.ballTilt || 0;
+      }
+      drawBall(state.ball.x, state.ball.y, ballR(), state.ballSpinAngle, opts);
+    }
+
+    // Sparkles on catch
+    if (state.captureStage === 'caught') {
+      const t = Math.min(1, (now - state.captureStageStart) / 900);
+      drawSparkles(livePose.cx, livePose.cy, ballR() * 1.8, t);
+    }
 
     // Verdict banner
     if (state.verdict) {
       const age = (now - state.verdict.time) / 1000;
-      const alpha = Math.max(0, 1 - age / 1.1);
+      const alpha = Math.max(0, 1 - age / 1.4);
       ctx.globalAlpha = alpha;
       ctx.textAlign = 'center';
       ctx.font = 'bold 30px -apple-system, BlinkMacSystemFont, sans-serif';
       ctx.fillStyle = state.verdict.color;
-      ctx.fillText(state.verdict.label, w / 2, p.cy + or + 44);
+      const or = livePose.outerR;
+      ctx.fillText(state.verdict.label, w / 2, livePose.cy + or + 44);
       if (state.verdict.pts > 0) {
         ctx.font = 'bold 18px -apple-system, sans-serif';
         ctx.fillStyle = '#e2e8f0';
-        ctx.fillText('+' + state.verdict.pts, w / 2, p.cy + or + 70);
+        ctx.fillText('+' + state.verdict.pts, w / 2, livePose.cy + or + 70);
       }
       ctx.globalAlpha = 1;
     }
@@ -644,11 +1114,10 @@
     requestAnimationFrame(draw);
   }
 
-  // Debug hook for tests: window.__catch.throw(x, y, vx, vy, spinTotal)
+  // Debug hook for tests
   window.__catch = {
     state,
     ringRatioNow: () => ringRatio(performance.now()),
-    // Fire a synthetic throw from (x, y) with the given velocity and spin.
     throw(x, y, vx, vy, spinTotal = 0) {
       state.status = 'thrown';
       state.ball.x = x;
@@ -661,9 +1130,11 @@
       state.lastRAF = state.thrownAt;
       state.trail = [{ x, y }];
     },
-    // Pin the Pokémon to a fixed pose (for deterministic tests), or clear.
     freezePokemon(fixedPose) { state.pokemonFrozen = fixedPose || null; },
     pose: () => pose(performance.now()),
+    setPokemon(index) { state.pokemonIndex = index % POKEMON.length; state.revealed = false; },
+    pokemonList: () => POKEMON.map(p => p.name),
+    setAudio(on) { audioEnabled = !!on; muteBtn.textContent = audioEnabled ? '🔊' : '🔇'; },
     layout: () => ({
       W: W(), H: H(),
       baseTargetX: baseTargetX(), baseTargetY: baseTargetY(),
@@ -673,6 +1144,8 @@
     }),
   };
 
+  // Initial UI
+  updateUI();
   requestAnimationFrame(draw);
 </script>
 <script src="pwa.js"></script>
