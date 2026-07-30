@@ -178,9 +178,10 @@
   </div>
 
   <p class="hint">
-    Drag the ball in a circle to add curveball spin, then flick it toward the Pokémon.<br />
+    The Pokémon jumps left, right, up, down, and closer / farther — lead your target.<br />
+    Drag in a circle to add curveball spin, then flick toward the Pokémon.<br />
     Aim, speed and direction all matter. Curveballs bend — throw off-center to compensate.<br />
-    Score fires on impact: land inside the smallest inner ring for an Excellent.
+    Land inside the smallest inner ring for an Excellent.
   </p>
 </div>
 
@@ -204,10 +205,30 @@
   const W = () => stage.clientWidth;
   const H = () => stage.clientHeight;
 
-  const targetX = () => W() / 2;
-  const targetY = () => Math.min(H() * 0.3, 200);
-  const outerR = () => Math.min(W() * 0.28, 110);
+  const baseTargetX = () => W() / 2;
+  const baseTargetY = () => Math.min(H() * 0.3, 200);
+  const baseOuterR = () => Math.min(W() * 0.28, 110);
+  const baseSize = () => Math.min(60, W() * 0.16);
   const ballR = () => Math.max(22, W() * 0.075);
+
+  // Pokémon movement: three sine waves at non-commensurate periods so the
+  // pattern doesn't repeat, on X, Y, and scale (which reads as depth).
+  function pose(now) {
+    if (state.pokemonFrozen) return state.pokemonFrozen;
+    const ampX = Math.min(60, W() * 0.18);
+    const ampY = 24;
+    const ampScale = 0.26;
+    const dx = Math.sin(now * 0.00233 + 0.7) * ampX;
+    const dy = Math.sin(now * 0.00331 + 1.9) * ampY;
+    const scale = 1 + Math.sin(now * 0.00180 + 0.3) * ampScale;
+    const cx = baseTargetX() + dx;
+    const cy = baseTargetY() + dy;
+    return {
+      cx, cy,
+      outerR: baseOuterR() * scale,
+      size: baseSize() * scale,
+    };
+  }
   const ballStartX = () => W() / 2;
   const ballStartY = () => H() - ballR() - 40;
 
@@ -224,6 +245,8 @@
     curveball: false,
     ringPhaseStart: performance.now(),
     frozenRingRatio: null,
+    frozenPose: null,
+    pokemonFrozen: null,
     thrownAt: 0,
     flightStart: 0,
     lastRAF: 0,
@@ -248,6 +271,7 @@
     state.spinTotal = 0;
     state.curveball = false;
     state.frozenRingRatio = null;
+    state.frozenPose = null;
     state.trail = [];
     state.ballSpinAngle = 0;
     state.ballSpinVel = 0;
@@ -357,11 +381,11 @@
     state.returnStart = performance.now();
   }
 
-  function completeThrow(distFromCenter, ratioAtImpact) {
+  function completeThrow(distFromCenter, ratioAtImpact, outerRAtImpact) {
     // ratioAtImpact is the inner ring's ratio at the moment of collision,
     // or null if the ball never hit the target.
     let tier;
-    const or = outerR();
+    const or = outerRAtImpact != null ? outerRAtImpact : baseOuterR();
     if (ratioAtImpact == null || distFromCenter > or) {
       tier = { label: 'Miss', pts: 0, color: '#f87171' };
     } else {
@@ -478,15 +502,21 @@
     const w = W(), h = H();
     ctx.clearRect(0, 0, w, h);
 
+    // Freeze pose at impact so the result banner shows exactly what
+    // happened; otherwise, the Pokémon keeps drifting live.
+    const p = state.status === 'result' && state.frozenPose
+      ? state.frozenPose
+      : pose(now);
+    const or = p.outerR;
+
     // Pokemon
-    drawPokemon(targetX(), targetY(), Math.min(60, W() * 0.16));
+    drawPokemon(p.cx, p.cy, p.size);
 
     // Outer ring
-    const or = outerR();
     ctx.strokeStyle = 'rgba(148, 163, 184, 0.3)';
     ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.arc(targetX(), targetY(), or, 0, 2 * Math.PI);
+    ctx.arc(p.cx, p.cy, or, 0, 2 * Math.PI);
     ctx.stroke();
 
     // Inner target ring — live during flight, frozen during result banner.
@@ -498,7 +528,7 @@
     ctx.strokeStyle = tier.color;
     ctx.lineWidth = 3;
     ctx.beginPath();
-    ctx.arc(targetX(), targetY(), innerR, 0, 2 * Math.PI);
+    ctx.arc(p.cx, p.cy, innerR, 0, 2 * Math.PI);
     ctx.stroke();
 
     // Spin progress meter around ball while dragging
@@ -549,20 +579,20 @@
       state.trail.push({ x: state.ball.x, y: state.ball.y });
       if (state.trail.length > 40) state.trail.shift();
 
-      // Collision with the Pokémon's outer ring. Trigger when ball center
-      // reaches the outer boundary — matches the judgment threshold in
-      // completeThrow, so a fired collision always scores at least "Hit".
-      const dx = state.ball.x - targetX();
-      const dy = state.ball.y - targetY();
+      // Collision uses the Pokémon's live pose (it moves during the throw).
+      const dx = state.ball.x - p.cx;
+      const dy = state.ball.y - p.cy;
       const dist = Math.hypot(dx, dy);
       if (dist <= or) {
-        completeThrow(dist, ringRatio(now));
+        state.frozenPose = { cx: p.cx, cy: p.cy, outerR: p.outerR, size: p.size };
+        completeThrow(dist, ringRatio(now), or);
       } else if (
         state.ball.x < -60 || state.ball.x > w + 60 ||
         state.ball.y > h + 60 || state.ball.y < -200 ||
         (now - state.flightStart) > 3000
       ) {
-        completeThrow(Infinity, null);
+        state.frozenPose = { cx: p.cx, cy: p.cy, outerR: p.outerR, size: p.size };
+        completeThrow(Infinity, null, or);
       }
     } else if (state.status === 'returning') {
       const dt = (now - state.returnStart) / 300;
@@ -602,11 +632,11 @@
       ctx.textAlign = 'center';
       ctx.font = 'bold 30px -apple-system, BlinkMacSystemFont, sans-serif';
       ctx.fillStyle = state.verdict.color;
-      ctx.fillText(state.verdict.label, w / 2, targetY() + or + 44);
+      ctx.fillText(state.verdict.label, w / 2, p.cy + or + 44);
       if (state.verdict.pts > 0) {
         ctx.font = 'bold 18px -apple-system, sans-serif';
         ctx.fillStyle = '#e2e8f0';
-        ctx.fillText('+' + state.verdict.pts, w / 2, targetY() + or + 70);
+        ctx.fillText('+' + state.verdict.pts, w / 2, p.cy + or + 70);
       }
       ctx.globalAlpha = 1;
     }
@@ -631,10 +661,13 @@
       state.lastRAF = state.thrownAt;
       state.trail = [{ x, y }];
     },
+    // Pin the Pokémon to a fixed pose (for deterministic tests), or clear.
+    freezePokemon(fixedPose) { state.pokemonFrozen = fixedPose || null; },
+    pose: () => pose(performance.now()),
     layout: () => ({
       W: W(), H: H(),
-      targetX: targetX(), targetY: targetY(),
-      outerR: outerR(), ballR: ballR(),
+      baseTargetX: baseTargetX(), baseTargetY: baseTargetY(),
+      baseOuterR: baseOuterR(), ballR: ballR(),
       ballStartX: ballStartX(), ballStartY: ballStartY(),
       SPIN_THRESHOLD,
     }),
