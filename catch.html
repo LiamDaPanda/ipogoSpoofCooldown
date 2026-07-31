@@ -127,11 +127,15 @@
     width: 100%;
     height: 100%;
   }
-  .mute-btn {
+  .stage-controls {
     position: absolute;
     top: 8px;
     right: 8px;
     z-index: 2;
+    display: flex;
+    gap: 6px;
+  }
+  .icon-btn {
     background: rgba(15, 23, 42, 0.6);
     border: 1px solid var(--border);
     color: var(--text);
@@ -145,6 +149,7 @@
     justify-content: center;
     padding: 0;
   }
+  .icon-btn.off { opacity: 0.5; }
   .pokemon-name {
     position: absolute;
     top: 10px;
@@ -207,7 +212,10 @@
   <div class="stage" id="stage">
     <canvas id="game"></canvas>
     <div class="pokemon-name" id="pokemon-name">?????</div>
-    <button class="mute-btn" id="mute-btn" aria-label="Toggle sound">🔊</button>
+    <div class="stage-controls">
+      <button class="icon-btn" id="haptic-btn" aria-label="Toggle vibration">📳</button>
+      <button class="icon-btn" id="mute-btn" aria-label="Toggle sound">🔊</button>
+    </div>
   </div>
 
   <div class="controls">
@@ -428,11 +436,48 @@
 
   const muteBtn = document.getElementById('mute-btn');
   muteBtn.textContent = audioEnabled ? '🔊' : '🔇';
+  muteBtn.classList.toggle('off', !audioEnabled);
   muteBtn.addEventListener('click', () => {
     audioEnabled = !audioEnabled;
     muteBtn.textContent = audioEnabled ? '🔊' : '🔇';
+    muteBtn.classList.toggle('off', !audioEnabled);
     localStorage.setItem('catch-mute', audioEnabled ? '0' : '1');
     if (audioEnabled) ensureAudio();
+  });
+
+  // ---------- Haptics (Web Vibration API) ----------
+  // Silently no-ops on iOS Safari (unsupported) and anywhere the user has
+  // denied vibration. Patterns are alternating ms on/off pairs; a single
+  // number is a one-shot pulse.
+  const hasVibrate = 'vibrate' in navigator;
+  let hapticsEnabled = (localStorage.getItem('catch-haptics') !== '0');
+
+  function haptic(pattern) {
+    if (!hapticsEnabled || !hasVibrate) return;
+    try { navigator.vibrate(pattern); } catch {}
+  }
+
+  const HAPTIC = {
+    curveEngaged: () => haptic(8),
+    impact:       () => haptic(35),
+    wobble:       () => haptic(12),
+    caught:       () => haptic([30, 45, 30, 45, 70]),
+    escape:       () => haptic([15, 60, 15, 60]),
+    miss:         () => haptic(55),
+  };
+
+  const hapticBtn = document.getElementById('haptic-btn');
+  hapticBtn.textContent = hapticsEnabled ? '📳' : '📴';
+  hapticBtn.classList.toggle('off', !hapticsEnabled);
+  if (!hasVibrate) {
+    hapticBtn.style.display = 'none'; // hide toggle where the API is missing
+  }
+  hapticBtn.addEventListener('click', () => {
+    hapticsEnabled = !hapticsEnabled;
+    hapticBtn.textContent = hapticsEnabled ? '📳' : '📴';
+    hapticBtn.classList.toggle('off', !hapticsEnabled);
+    localStorage.setItem('catch-haptics', hapticsEnabled ? '1' : '0');
+    if (hapticsEnabled) haptic(20); // confirmation buzz
   });
 
   // ---------- State ----------
@@ -593,7 +638,11 @@
     if (Math.abs(state.spinTotal) >= SPIN_THRESHOLD) {
       if (!state.curveball) {
         state.curveball = true;
-        if (!state.curveNotified) { state.curveNotified = true; SFX.curveEngaged(); }
+        if (!state.curveNotified) {
+          state.curveNotified = true;
+          SFX.curveEngaged();
+          HAPTIC.curveEngaged();
+        }
       }
     }
 
@@ -619,10 +668,30 @@
     state.thrownAt = performance.now();
     state.flightStart = state.thrownAt;
     state.lastRAF = state.thrownAt;
+    // Ball speed tuned so a max flick reaches the Pokémon in ~350ms and
+    // a light flick around ~600ms — matching typical PoGo throw footage.
     const speed = Math.hypot(vx, vy);
-    const MAX_SPEED = 2.4;
+    const MAX_SPEED = 1.0;
     const scale = speed > MAX_SPEED ? MAX_SPEED / speed : 1;
-    state.ballVel = { vx: vx * scale, vy: vy * scale };
+    let bvx = vx * scale;
+    let bvy = vy * scale;
+
+    // Curveball Magnus kick: give the ball a sideways velocity component
+    // immediately on release so the curve is visible from t=0 (matches
+    // in-game behaviour where a spun ball starts bending right away).
+    if (state.curveball) {
+      const spd = Math.hypot(bvx, bvy);
+      if (spd > 0.01) {
+        const perpX = -bvy / spd;
+        const perpY = bvx / spd;
+        const spinFactor = Math.min(1.5, Math.abs(state.spinTotal) / SPIN_THRESHOLD);
+        const sign = state.spinTotal >= 0 ? 1 : -1;
+        const KICK = 0.22;
+        bvx += perpX * sign * spinFactor * KICK;
+        bvy += perpY * sign * spinFactor * KICK;
+      }
+    }
+    state.ballVel = { vx: bvx, vy: bvy };
     state.trail = [{ x: state.ball.x, y: state.ball.y }];
   }
   canvas.addEventListener('pointerup', onRelease);
@@ -673,10 +742,11 @@
     }
     if (tier.label === 'Excellent' && state.isCurveballHit) state.excellent += 1;
 
-    // Sound cue for the impact itself.
-    if (tier.label === 'Miss') { SFX.miss(); }
+    // Sound + haptic cue for the impact itself.
+    if (tier.label === 'Miss') { SFX.miss(); HAPTIC.miss(); }
     else {
       SFX.impact();
+      HAPTIC.impact();
       const sfx = { Excellent: SFX.hitExcellent, Great: SFX.hitGreat, Nice: SFX.hitNice, Hit: SFX.hitPlain }[tier.label];
       setTimeout(sfx, 60);
     }
@@ -845,7 +915,7 @@
         state.ball.y = p.cy;
         state.captureStage = 'wobble1';
         state.captureStageStart = now;
-        SFX.wobble();
+        SFX.wobble(); HAPTIC.wobble();
       }
       return { pokemonScale, ballOpenness: openness, ballTilt: 0 };
     }
@@ -864,7 +934,7 @@
         if (!held) {
           state.captureStage = 'escape';
           state.captureStageStart = now;
-          SFX.escape();
+          SFX.escape(); HAPTIC.escape();
         } else if (s === 'wobble3') {
           state.captureStage = 'caught';
           state.captureStageStart = now;
@@ -872,7 +942,7 @@
           state.revealed = true;
           document.getElementById('pokemon-name').textContent =
             currentPokemon().name.toUpperCase();
-          SFX.caught();
+          SFX.caught(); HAPTIC.caught();
           state.verdict = {
             label: state.isCurveballHit ? 'Curveball catch!' : 'Gotcha!',
             pts: state.verdict.pts + 25,
@@ -884,7 +954,7 @@
         } else {
           state.captureStage = s === 'wobble1' ? 'wobble2' : 'wobble3';
           state.captureStageStart = now;
-          SFX.wobble();
+          SFX.wobble(); HAPTIC.wobble();
         }
       }
       return { pokemonScale: 0, ballOpenness: 0, ballTilt: tilt };
@@ -1008,7 +1078,9 @@
     if (state.status === 'thrown') {
       const dt = Math.min(32, now - state.lastRAF);
       state.lastRAF = now;
-      const GRAVITY = 0.0009;
+      // Light gravity — ball mostly flies to target rather than arcing
+      // down like a projectile. Weak throws still fall short.
+      const GRAVITY = 0.00042;
       state.ballVel.vy += GRAVITY * dt;
       if (state.curveball) {
         const spd = Math.hypot(state.ballVel.vx, state.ballVel.vy);
@@ -1017,7 +1089,9 @@
           const perpY = state.ballVel.vx / spd;
           const spinFactor = Math.min(1.5, Math.abs(state.spinTotal) / SPIN_THRESHOLD);
           const sign = state.spinTotal >= 0 ? 1 : -1;
-          const CURVE_STRENGTH = 0.0008;
+          // Continues bending the trajectory on top of the release kick,
+          // so the path spirals rather than being a straight deflection.
+          const CURVE_STRENGTH = 0.0011;
           const a = sign * spinFactor * CURVE_STRENGTH;
           state.ballVel.vx += perpX * a * dt;
           state.ballVel.vy += perpY * a * dt;
