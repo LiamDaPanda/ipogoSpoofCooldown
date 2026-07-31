@@ -254,8 +254,9 @@
   const baseOuterR = () => Math.min(W() * 0.28, 110);
   const baseSize = () => Math.min(60, W() * 0.16);
   const ballR = () => Math.max(22, W() * 0.075);
+  const groundY = () => H() - 40;
   const ballStartX = () => W() / 2;
-  const ballStartY = () => H() - ballR() - 40;
+  const ballStartY = () => groundY() - ballR();
 
   const SPIN_THRESHOLD = 2 * Math.PI * 1.1; // ~one full loop
   const CYCLE_MS = 1900;
@@ -511,7 +512,9 @@
 
     // Roster / stats
     pokemonIndex: Math.floor(Math.random() * POKEMON.length),
+    pokemonSpawnStart: performance.now(),
     revealed: false,
+    impactStars: null, // { x, y, color, start }
     score: 0,
     streak: 0,
     best: 0,
@@ -534,8 +537,19 @@
     let idx = Math.floor(Math.random() * POKEMON.length);
     if (POKEMON.length > 1 && idx === state.pokemonIndex) idx = (idx + 1) % POKEMON.length;
     state.pokemonIndex = idx;
+    state.pokemonSpawnStart = performance.now();
     state.revealed = false;
     document.getElementById('pokemon-name').textContent = '?????';
+  }
+
+  // Spawn-in scale: pokemon pops in over ~400ms with a slight overshoot.
+  function spawnFactor(now) {
+    const t = (now - state.pokemonSpawnStart) / 400;
+    if (t >= 1) return 1;
+    if (t <= 0) return 0;
+    // Ease-out with a tiny overshoot, then settle to 1.
+    const eased = 1 - Math.pow(1 - t, 2);
+    return eased * (1 + (1 - t) * 0.08);
   }
 
   function resetBall() {
@@ -551,6 +565,7 @@
     state.frozenPose = null;
     state.trail = [];
     state.impactFlash = null;
+    state.impactStars = null;
     state.ballSpinAngle = 0;
     state.ballSpinVel = 0;
     state.ballWobble = 0;
@@ -749,6 +764,12 @@
       HAPTIC.impact();
       const sfx = { Excellent: SFX.hitExcellent, Great: SFX.hitGreat, Nice: SFX.hitNice, Hit: SFX.hitPlain }[tier.label];
       setTimeout(sfx, 60);
+      // Star burst in the tier colour for anything nicer than a plain hit.
+      if (tier.label === 'Excellent' || tier.label === 'Great' || tier.label === 'Nice') {
+        state.impactStars = {
+          x: state.ball.x, y: state.ball.y, color: tier.color, start: performance.now(),
+        };
+      }
     }
 
     state.verdict = {
@@ -864,13 +885,82 @@
     ctx.restore();
   }
 
-  function drawShadow(cx, cy, r) {
+  function drawGround() {
+    const gy = groundY();
+    // Subtle grass band at the bottom.
+    const grad = ctx.createLinearGradient(0, gy - 6, 0, H());
+    grad.addColorStop(0, 'rgba(74, 222, 128, 0.06)');
+    grad.addColorStop(0.4, 'rgba(45, 82, 55, 0.5)');
+    grad.addColorStop(1, 'rgba(15, 30, 22, 0.9)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, gy - 6, W(), H() - gy + 6);
+    // Ground line highlight
+    ctx.strokeStyle = 'rgba(74, 222, 128, 0.25)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, gy - 6);
+    ctx.lineTo(W(), gy - 6);
+    ctx.stroke();
+  }
+
+  function drawPokemonShadow(cx, scale) {
+    // Ground-projected shadow — scales with the pokemon's depth so the
+    // "closer" Pokémon casts a bigger, softer shadow.
+    const gy = groundY();
     ctx.save();
-    ctx.globalAlpha = 0.3;
+    ctx.globalAlpha = 0.35 * scale;
     ctx.fillStyle = '#000';
     ctx.beginPath();
-    ctx.ellipse(cx, cy + r * 0.9, r * 0.9, r * 0.2, 0, 0, 2 * Math.PI);
+    ctx.ellipse(cx, gy - 4, 55 * scale, 8 * scale, 0, 0, 2 * Math.PI);
     ctx.fill();
+    ctx.restore();
+  }
+
+  function drawCurveSparkles(x, y, r, now) {
+    // Small orbiting purple particles when curveball is active.
+    ctx.save();
+    for (let i = 0; i < 5; i++) {
+      const a = (now * 0.008) + i * (2 * Math.PI / 5);
+      const dist = r * 1.4 + Math.sin(now * 0.006 + i) * 3;
+      const px = x + Math.cos(a) * dist;
+      const py = y + Math.sin(a) * dist;
+      const size = 2 + Math.sin(now * 0.01 + i) * 0.8;
+      const alpha = 0.55 + Math.sin(now * 0.012 + i) * 0.25;
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = i % 2 === 0 ? '#a78bfa' : '#f0abfc';
+      ctx.beginPath();
+      ctx.arc(px, py, size, 0, 2 * Math.PI);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function drawImpactStars(now) {
+    const s = state.impactStars;
+    if (!s) return;
+    const age = (now - s.start) / 600;
+    if (age >= 1) { state.impactStars = null; return; }
+    const count = 8;
+    ctx.save();
+    for (let i = 0; i < count; i++) {
+      const a = (i / count) * 2 * Math.PI;
+      const dist = 15 + age * 55;
+      const px = s.x + Math.cos(a) * dist;
+      const py = s.y + Math.sin(a) * dist;
+      const alpha = (1 - age) * 0.9;
+      const size = 4 * (1 - age * 0.5);
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = s.color;
+      // 4-point star
+      ctx.beginPath();
+      for (let j = 0; j < 4; j++) {
+        const ang = j * Math.PI / 2 + age * 4;
+        ctx.lineTo(px + Math.cos(ang) * size, py + Math.sin(ang) * size);
+        ctx.lineTo(px + Math.cos(ang + Math.PI / 4) * size * 0.4, py + Math.sin(ang + Math.PI / 4) * size * 0.4);
+      }
+      ctx.closePath();
+      ctx.fill();
+    }
     ctx.restore();
   }
 
@@ -913,20 +1003,39 @@
       if (t >= 1) {
         state.ball.x = p.cx;
         state.ball.y = p.cy;
+        state.captureStage = 'drop';
+        state.captureStageStart = now;
+      }
+      return { pokemonScale, ballOpenness: openness, ballTilt: 0 };
+    }
+
+    if (s === 'drop') {
+      // Ball falls from the Pokémon to the ground with an ease-in arc,
+      // then rests. This is the moment before wobbles start.
+      const dur = 450;
+      const t = Math.min(1, elapsed / dur);
+      const eased = t * t; // ease-in (gravity)
+      const dropTargetY = groundY() - ballR();
+      const startY = p.cy;
+      state.ball.x = p.cx;
+      state.ball.y = startY + (dropTargetY - startY) * eased;
+      if (t >= 1) {
+        state.ball.y = dropTargetY;
         state.captureStage = 'wobble1';
         state.captureStageStart = now;
         SFX.wobble(); HAPTIC.wobble();
       }
-      return { pokemonScale, ballOpenness: openness, ballTilt: 0 };
+      return { pokemonScale: 0, ballOpenness: 0, ballTilt: 0 };
     }
 
     if (s === 'wobble1' || s === 'wobble2' || s === 'wobble3') {
       const dur = 550;
       const t = Math.min(1, elapsed / dur);
-      // Tilt: -1 → +1 → -1 over the wobble; scaled by amplitude.
+      // Tilt: -1 → +1 → -1 over the wobble; scaled by amplitude. Ball
+      // now sits on the ground rather than floating at the Pokémon.
       const tilt = Math.sin(t * Math.PI * 2) * 0.35;
-      state.ball.x = p.cx;
-      state.ball.y = p.cy;
+      state.ball.x = p.cx + Math.sin(t * Math.PI * 2) * 4;
+      state.ball.y = groundY() - ballR();
       if (t >= 1) {
         // Decide outcome of this wobble.
         const idx = { wobble1: 0, wobble2: 1, wobble3: 2 }[s];
@@ -963,8 +1072,9 @@
     if (s === 'caught') {
       const dur = 900;
       const t = Math.min(1, elapsed / dur);
+      // Ball settles on the ground; sparkles rise.
       state.ball.x = p.cx;
-      state.ball.y = p.cy;
+      state.ball.y = groundY() - ballR();
       if (t >= 1) {
         state.status = 'result';
         setTimeout(nextRound, 500);
@@ -975,11 +1085,12 @@
     if (s === 'escape') {
       const dur = 700;
       const t = Math.min(1, elapsed / dur);
-      // Ball opens; Pokémon scales back to full.
+      // Ball bursts open on the ground; Pokémon reappears at its
+      // original position (scales back to full).
       const openness = Math.min(1, t * 2);
       const pokemonScale = t;
       state.ball.x = p.cx + Math.sin(t * Math.PI * 3) * 6 * (1 - t);
-      state.ball.y = p.cy + t * 40; // ball falls away
+      state.ball.y = (groundY() - ballR()) + t * 20;
       state.verdict = {
         label: 'Broke free!',
         pts: state.verdict ? state.verdict.pts : 0,
@@ -1016,6 +1127,10 @@
     const w = W(), h = H();
     ctx.clearRect(0, 0, w, h);
 
+    // Ground plane — behind everything else so the Pokémon and ball
+    // stand on it.
+    drawGround();
+
     const livePose = (state.status === 'result' && state.frozenPose)
       ? state.frozenPose
       : (state.status === 'capturing' && state.frozenPose ? state.frozenPose : pose(now));
@@ -1026,17 +1141,33 @@
       captureOut = updateCapture(now, livePose);
     }
 
-    // Draw Pokémon (may be scaled during capture)
-    const pokemonScale = captureOut ? captureOut.pokemonScale : 1;
+    // Spawn-in scale applied to both the Pokémon and its shadow.
+    const spawn = spawnFactor(now);
+    const pokemonScale = (captureOut ? captureOut.pokemonScale : 1) * spawn;
     const pk = currentPokemon();
+
+    // Shadow (grows with pokemon depth + spawn)
+    if (pokemonScale > 0.01) {
+      const depthScale = livePose.outerR / baseOuterR();
+      drawPokemonShadow(livePose.cx, depthScale * pokemonScale);
+    }
+
+    // Pokémon itself
     if (pokemonScale > 0.01) {
       const size = livePose.size * pokemonScale;
       const fill = state.revealed ? pk.color : SILHOUETTE;
       pk.draw(livePose.cx, livePose.cy, size, fill);
     }
 
-    // Rings (only if Pokémon is visible-ish and we're not mid-catch cheer)
-    if (state.captureStage !== 'caught') {
+    // Rings only appear once the player engages with the ball — matches
+    // PoGo where the target ring isn't visible until you're throwing.
+    const showRing = spawn >= 1 && (
+      state.status === 'dragging' ||
+      state.status === 'thrown' ||
+      (state.status === 'capturing' && state.captureStage === 'suck') ||
+      state.status === 'result'
+    );
+    if (showRing && state.captureStage !== 'caught') {
       const or = livePose.outerR * (state.status === 'capturing' ? Math.max(0, pokemonScale) : 1);
       if (or > 3 && state.captureStage !== 'wobble1' && state.captureStage !== 'wobble2' && state.captureStage !== 'wobble3') {
         // Outer ring
@@ -1130,8 +1261,14 @@
       state.ballSpinVel *= 0.9;
     }
 
-    // Impact flash on the ring's outer edge
+    // Impact flash + starburst on the ring's outer edge
     if (state.impactFlash) drawImpactFlash(now);
+    if (state.impactStars) drawImpactStars(now);
+
+    // Curveball sparkles orbit the ball while it's a charged curve.
+    if (state.curveball && (state.status === 'dragging' || state.status === 'thrown')) {
+      drawCurveSparkles(state.ball.x, state.ball.y, ballR(), now);
+    }
 
     // Trail behind the ball during flight
     if (state.trail && state.trail.length > 1 && state.status === 'thrown') {
