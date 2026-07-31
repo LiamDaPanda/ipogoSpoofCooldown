@@ -300,6 +300,29 @@
   }
   ul.tips li { margin-bottom: 8px; }
   ul.tips strong { color: var(--text); }
+
+  /* Phone (iPhone 13-ish) tightening — the cooldown page keeps its
+     natural scroll for the chart/tips panels, but the first screen
+     should fit above the fold on a 390×844 viewport. */
+  @media (max-width: 640px) {
+    body { min-height: 100dvh; }
+    .container {
+      padding: max(8px, env(safe-area-inset-top)) 12px max(16px, env(safe-area-inset-bottom));
+    }
+    nav { margin-bottom: 10px; }
+    nav a { padding: 8px; }
+    header { margin-bottom: 12px; }
+    h1 { font-size: 1.3rem; }
+    .subtitle { font-size: 0.82rem; }
+    .panel { padding: 14px; margin-bottom: 12px; }
+    .cooldown-value { font-size: 2.4rem; }
+    input[type="number"], input[type="text"] { padding: 10px; font-size: 0.95rem; }
+    button.primary { padding: 12px; font-size: 0.95rem; }
+    .field { margin-bottom: 10px; }
+    .verdict { padding: 6px 14px; font-size: 0.9rem; }
+    .verdict-detail { font-size: 0.8rem; }
+    ul.tips { font-size: 0.8rem; }
+  }
 </style>
 </head>
 <body>
