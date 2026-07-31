@@ -254,7 +254,10 @@
   const baseOuterR = () => Math.min(W() * 0.28, 110);
   const baseSize = () => Math.min(60, W() * 0.16);
   const ballR = () => Math.max(22, W() * 0.075);
+  // Near-camera ground line (where the ball rests) and the horizon
+  // (where the Pokémon's feet stand — deep into the scene).
   const groundY = () => H() - 40;
+  const horizonY = () => baseTargetY() + baseSize() * 1.15;
   const ballStartX = () => W() / 2;
   const ballStartY = () => groundY() - ballR();
 
@@ -898,32 +901,92 @@
   }
 
   function drawGround() {
+    const hy = horizonY();
     const gy = groundY();
-    // Subtle grass band at the bottom.
-    const grad = ctx.createLinearGradient(0, gy - 6, 0, H());
-    grad.addColorStop(0, 'rgba(74, 222, 128, 0.06)');
-    grad.addColorStop(0.4, 'rgba(45, 82, 55, 0.5)');
-    grad.addColorStop(1, 'rgba(15, 30, 22, 0.9)');
+    const w = W();
+    // Ground fill — trapezoidal perspective wedge from horizon down to
+    // the near-camera edge (fills the whole horizontal band because the
+    // "world" extends beyond the screen sides too).
+    const grad = ctx.createLinearGradient(0, hy, 0, H());
+    grad.addColorStop(0, 'rgba(30, 55, 40, 0.55)');
+    grad.addColorStop(0.5, 'rgba(45, 82, 55, 0.75)');
+    grad.addColorStop(1, 'rgba(15, 30, 22, 0.95)');
     ctx.fillStyle = grad;
-    ctx.fillRect(0, gy - 6, W(), H() - gy + 6);
-    // Ground line highlight
-    ctx.strokeStyle = 'rgba(74, 222, 128, 0.25)';
+    ctx.fillRect(0, hy, w, H() - hy);
+
+    // Perspective grid — horizontal lines compressed near the horizon
+    // and vertical lines converging to a vanishing point at the horizon
+    // centre. Very subtle so it reads as depth cues rather than a floor.
+    const cx = w / 2;
+    const gridN = 6;
     ctx.lineWidth = 1;
+    for (let i = 1; i <= gridN; i++) {
+      const t = i / gridN;
+      const y = hy + (H() - hy) * (t * t); // perspective compression near horizon
+      ctx.strokeStyle = `rgba(74, 222, 128, ${0.05 + t * 0.08})`;
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(w, y);
+      ctx.stroke();
+    }
+    // Vertical converging lines. Bottom edges spread wider than the
+    // canvas so the outer lines still angle in visibly.
+    const lanes = 5;
+    const spread = w * 1.4;
+    for (let i = -lanes; i <= lanes; i++) {
+      if (i === 0) continue; // skip the centre "camera" line
+      const bx = cx + (i / lanes) * (spread / 2);
+      ctx.strokeStyle = 'rgba(74, 222, 128, 0.09)';
+      ctx.beginPath();
+      ctx.moveTo(bx, H());
+      ctx.lineTo(cx + (i / lanes) * (w * 0.05), hy);
+      ctx.stroke();
+    }
+    // Horizon line
+    ctx.strokeStyle = 'rgba(74, 222, 128, 0.28)';
     ctx.beginPath();
-    ctx.moveTo(0, gy - 6);
-    ctx.lineTo(W(), gy - 6);
+    ctx.moveTo(0, hy);
+    ctx.lineTo(w, hy);
+    ctx.stroke();
+
+    // Near-camera ground line (where the ball rests)
+    ctx.strokeStyle = 'rgba(74, 222, 128, 0.2)';
+    ctx.beginPath();
+    ctx.moveTo(0, gy);
+    ctx.lineTo(w, gy);
     ctx.stroke();
   }
 
-  function drawPokemonShadow(cx, scale) {
-    // Ground-projected shadow — scales with the pokemon's depth so the
-    // "closer" Pokémon casts a bigger, softer shadow.
-    const gy = groundY();
+  function drawPokemonShadow(pokemonPose, spawn) {
+    // Shadow projected onto the ground at the Pokémon's feet — right at
+    // the horizon depth, not at the near ground line. This anchors the
+    // Pokémon to the ground plane properly.
+    const hy = horizonY();
+    const size = pokemonPose.size;
     ctx.save();
-    ctx.globalAlpha = 0.35 * scale;
+    ctx.globalAlpha = 0.4 * spawn;
     ctx.fillStyle = '#000';
     ctx.beginPath();
-    ctx.ellipse(cx, gy - 4, 55 * scale, 8 * scale, 0, 0, 2 * Math.PI);
+    ctx.ellipse(pokemonPose.cx, hy - 2, size * 0.7, size * 0.16, 0, 0, 2 * Math.PI);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawBallShadow(ball) {
+    // Ball's own shadow — projected to the near ground line. Separates
+    // from the ball as the ball flies up, giving a small altitude cue on
+    // top of the depth foreshortening.
+    if (ball.y >= groundY() - 2) return; // ball on the ground — no shadow
+    const gy = groundY();
+    const heightAbove = Math.max(0, gy - ball.y);
+    const alpha = Math.max(0.08, 0.35 - heightAbove * 0.0015);
+    const sx = ballR() * 0.9 * (1 - heightAbove * 0.001);
+    const sy = ballR() * 0.22;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = '#000';
+    ctx.beginPath();
+    ctx.ellipse(ball.x, gy - 2, Math.max(6, sx), sy, 0, 0, 2 * Math.PI);
     ctx.fill();
     ctx.restore();
   }
@@ -1158,10 +1221,9 @@
     const pokemonScale = (captureOut ? captureOut.pokemonScale : 1) * spawn;
     const pk = currentPokemon();
 
-    // Shadow (grows with pokemon depth + spawn)
+    // Shadow at the Pokémon's feet on the far ground plane
     if (pokemonScale > 0.01) {
-      const depthScale = livePose.outerR / baseOuterR();
-      drawPokemonShadow(livePose.cx, depthScale * pokemonScale);
+      drawPokemonShadow(livePose, pokemonScale);
     }
 
     // Pokémon itself
@@ -1244,6 +1306,25 @@
       state.ball.y += state.ballVel.vy * dt;
       state.ballSpinAngle += (state.curveball ? 0.35 : 0.08);
 
+      // Ground bounce — if the ball comes back down to the near ground
+      // line without hitting the Pokémon, it lands and bounces once with
+      // damping. Once it's more or less at rest, register the miss.
+      const gLine = groundY() - ballR();
+      if (state.ballVel.vy > 0 && state.ball.y >= gLine) {
+        state.ball.y = gLine;
+        if (Math.abs(state.ballVel.vy) < 0.18) {
+          // Settled on the ground — throw is done.
+          state.frozenPose = { cx: livePose.cx, cy: livePose.cy, outerR: livePose.outerR, size: livePose.size };
+          completeThrow(Infinity, null, livePose.outerR);
+          state.ballVel = { vx: 0, vy: 0 };
+        } else {
+          state.ballVel.vy = -state.ballVel.vy * 0.42; // dampened bounce
+          state.ballVel.vx *= 0.7;                     // ground friction
+          SFX.impact();
+          HAPTIC.wobble();
+        }
+      }
+
       state.trail.push({ x: state.ball.x, y: state.ball.y });
       if (state.trail.length > 40) state.trail.shift();
 
@@ -1303,6 +1384,12 @@
         ctx.lineTo(state.trail[i].x, state.trail[i].y);
         ctx.stroke();
       }
+    }
+
+    // Ball shadow — small oval on the near ground plane below the ball.
+    // Separates from the ball as it rises (pseudo-3D altitude cue).
+    if (state.status === 'thrown' || (state.status === 'idle')) {
+      drawBallShadow(state.ball);
     }
 
     // Ball — foreshortened by depth during flight so it visibly recedes
