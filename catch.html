@@ -258,6 +258,18 @@
   const ballStartX = () => W() / 2;
   const ballStartY = () => groundY() - ballR();
 
+  // Depth foreshortening for the ball. In real PoGo the ball starts big
+  // (near the camera) and shrinks as it flies "into" the scene toward
+  // the Pokémon. Returns a scale 1.0 → 0.55 based on how far the ball
+  // has travelled from its rest position toward the target's y.
+  function ballDepthScale(y) {
+    const start = ballStartY();
+    const end = baseTargetY();
+    if (start <= end) return 1;
+    const t = Math.max(0, Math.min(1, (start - y) / (start - end)));
+    return 1 - t * 0.45;
+  }
+
   const SPIN_THRESHOLD = 2 * Math.PI * 1.1; // ~one full loop
   const CYCLE_MS = 1900;
 
@@ -1242,8 +1254,13 @@
         state.frozenPose = { cx: livePose.cx, cy: livePose.cy, outerR: livePose.outerR, size: livePose.size };
         completeThrow(dist, ringRatio(now), livePose.outerR);
       } else if (
-        state.ball.x < -60 || state.ball.x > w + 60 ||
-        state.ball.y > h + 60 || state.ball.y < -200 ||
+        // Overshot: ball flew past the Pokémon's depth plane without
+        // touching it. In the real game a throw that overshoots or
+        // misses to the side just ends — the ball doesn't sail off the
+        // top of the screen.
+        state.ball.y < livePose.cy - livePose.outerR * 0.7 ||
+        state.ball.x < -30 || state.ball.x > w + 30 ||
+        state.ball.y > h + 60 ||
         (now - state.flightStart) > 3000
       ) {
         state.frozenPose = { cx: livePose.cx, cy: livePose.cy, outerR: livePose.outerR, size: livePose.size };
@@ -1270,15 +1287,17 @@
       drawCurveSparkles(state.ball.x, state.ball.y, ballR(), now);
     }
 
-    // Trail behind the ball during flight
+    // Trail behind the ball during flight — tapers with depth as well
+    // as with age, so the trail looks like it's receding into the scene.
     if (state.trail && state.trail.length > 1 && state.status === 'thrown') {
       ctx.lineCap = 'round';
       for (let i = 1; i < state.trail.length; i++) {
         const a = i / state.trail.length;
+        const depth = ballDepthScale(state.trail[i].y);
         ctx.strokeStyle = state.curveball
           ? `rgba(167, 139, 250, ${a * 0.55})`
           : `rgba(226, 232, 240, ${a * 0.4})`;
-        ctx.lineWidth = 3 * a + 1;
+        ctx.lineWidth = (3 * a + 1) * depth;
         ctx.beginPath();
         ctx.moveTo(state.trail[i - 1].x, state.trail[i - 1].y);
         ctx.lineTo(state.trail[i].x, state.trail[i].y);
@@ -1286,16 +1305,19 @@
       }
     }
 
-    // Ball
-    const showBall = !(state.status === 'capturing' && (state.captureStage === 'suck' || state.captureStage === 'wobble1' || state.captureStage === 'wobble2' || state.captureStage === 'wobble3' || state.captureStage === 'caught' || state.captureStage === 'escape'))
-      || true; // always render the ball; capture uses openness/tilt to shape it
-    if (showBall) {
+    // Ball — foreshortened by depth during flight so it visibly recedes
+    // into the scene toward the Pokémon; full size during drag, capture,
+    // and idle (all near-camera).
+    {
       const opts = { glow: (state.curveball && (state.status === 'dragging' || state.status === 'thrown')) };
       if (captureOut) {
         opts.openness = captureOut.ballOpenness || 0;
         opts.tilt = captureOut.ballTilt || 0;
       }
-      drawBall(state.ball.x, state.ball.y, ballR(), state.ballSpinAngle, opts);
+      const renderR = state.status === 'thrown'
+        ? ballR() * ballDepthScale(state.ball.y)
+        : ballR();
+      drawBall(state.ball.x, state.ball.y, renderR, state.ballSpinAngle, opts);
     }
 
     // Sparkles on catch
